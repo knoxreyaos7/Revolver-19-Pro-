@@ -94,6 +94,9 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--mono);height:
 .tf{padding:3px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text2);font-family:var(--mono);font-size:9px;cursor:pointer;border-radius:3px;transition:all .1s}
 .tf.on{border-color:var(--gold2);color:var(--gold);background:var(--gold-glow)}
 .chart-hint{position:absolute;bottom:8px;right:8px;font-size:8px;color:var(--text3);z-index:2;pointer-events:none}
+.bt-chart-badge{position:absolute;top:8px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:8px;z-index:3;background:rgba(245,166,35,0.12);border:1px solid var(--gold2);border-radius:4px;padding:4px 6px 4px 10px}
+.bt-chart-badge span{font-family:var(--sans);font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--gold);text-transform:uppercase;white-space:nowrap}
+.bt-chart-badge button{background:var(--gold);border:none;color:#060608;font-family:var(--mono);font-size:9px;font-weight:700;padding:3px 8px;border-radius:3px;cursor:pointer;white-space:nowrap}
 .watermark{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;pointer-events:none;z-index:1}
 .watermark span{font-family:var(--sans);font-size:11px;letter-spacing:.2em;color:var(--text3);text-transform:uppercase}
 .watermark small{font-size:9px;color:var(--text3);letter-spacing:.05em}
@@ -360,6 +363,10 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
     <div class="chart-area" id="chartArea">
       <canvas id="cv"></canvas>
       <div class="chart-label" id="chartLabel">XAUUSD · <b>M1</b></div>
+      <div class="bt-chart-badge" id="chartBtBadge">
+        <span>⏮ Backtest replay</span>
+        <button onclick="btExitChartView()">Exit to live</button>
+      </div>
       <div class="tfs">
         <button class="tf on" data-g="60" onclick="setTF(60)">M1</button>
         <button class="tf" data-g="300" onclick="setTF(300)">M5</button>
@@ -583,7 +590,7 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
         <div class="bt-summary-note" id="btCapNote" style="display:none"></div>
 
         <div class="settings-section">
-          <div class="settings-section-title">Trade Log <button class="btn-outline" style="width:auto;padding:2px 8px;font-size:8px" onclick="btPlayReplay()">▶ visual replay</button></div>
+          <div class="settings-section-title">Trade Log <span style="display:flex;gap:4px"><button class="btn-outline" style="width:auto;padding:2px 8px;font-size:8px" onclick="btShowFullOnChart()">📊 show on chart</button><button class="btn-outline" style="width:auto;padding:2px 8px;font-size:8px" onclick="btPlayReplay()">▶ visual replay</button></span></div>
           <div id="btTradeLog"></div>
         </div>
       </div>
@@ -614,6 +621,7 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
           <input class="acct-input" type="number" id="cfgProfitTarget" min="0" step="10">
         </div>
         <div class="small-note" style="margin-top:0">Purely simulated bookkeeping — this is not connected to any broker or real funds. Saving applies your new starting balance and profit target to the paper account immediately (unless you currently have open paper positions, in which case it takes effect once they close or you Reset Simulation).
+        </div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Risk Engine</div>
@@ -767,6 +775,20 @@ let activeTF = 60;
 let autoReconnect = true;
 
 /* ============================================================
+   BACKTEST-ON-MAIN-CHART STATE
+   The main chart (#cv) can switch from the live feed into a
+   "backtest replay" view that plays a completed backtest's
+   candles + trades on the same canvas/pan/zoom the live chart
+   uses, instead of a separate mini equity-curve canvas only.
+   ============================================================ */
+let btChartActive = false;
+let btChartSym = 'XAU';
+let btChartTF = 60;
+let btChartOffset = 0;
+let btChartCandleW = 9;
+let btChartRevealIdx = null; // index into stats.equityCurve; null = show everything (no scrub)
+
+/* ============================================================
    CHART — canvas candlestick renderer with pan / zoom
    ============================================================ */
 const cv = document.getElementById('cv');
@@ -784,6 +806,7 @@ function resizeCV(){
 }
 
 function drawChart(){
+  if (btChartActive) { drawBacktestChart(); return; }
   const W = cv.width / DPR, H = cv.height / DPR;
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle = '#060608';
@@ -946,6 +969,187 @@ function drawChart(){
   drawPositionLines(PAD, cW, cH, toY, dec);
 }
 
+/* ============================================================
+   BACKTEST-ON-MAIN-CHART RENDERER
+   Draws the completed backtest's candle history for btChartSym
+   on the same #cv canvas, with the same pan/zoom feel as the
+   live chart, plus every trade's entry/exit plotted directly on
+   the price action and (while a visual replay is running) a
+   cursor that reveals candles/trades up to the current point.
+   ============================================================ */
+function drawBacktestChart(){
+  const W = cv.width / DPR, H = cv.height / DPR;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = '#060608';
+  ctx.fillRect(0,0,W,H);
+
+  const wm = document.getElementById('chartWatermark');
+  const run = btLastRun;
+  const dec = SYM[btChartSym].decimals;
+
+  if (!run || !run.chartCandles || !run.chartCandles[btChartSym]) {
+    wm.style.display = 'flex';
+    document.getElementById('wmMain').textContent = 'NO BACKTEST DATA';
+    document.getElementById('wmSub').textContent = btChartSym + ' was not included in the last backtest run.';
+    return;
+  }
+
+  const revealEpoch = (btChartRevealIdx != null && run.stats.equityCurve[btChartRevealIdx])
+    ? run.stats.equityCurve[btChartRevealIdx].epoch : null;
+
+  const fullData = run.chartCandles[btChartSym][btChartTF];
+  const data = revealEpoch != null ? fullData.filter(c => c.epoch <= revealEpoch) : fullData;
+
+  if (!data || data.length < 2) {
+    wm.style.display = 'flex';
+    document.getElementById('wmMain').textContent = 'REPLAY STARTING…';
+    document.getElementById('wmSub').textContent = 'Waiting for the first candles to reveal.';
+    return;
+  }
+  wm.style.display = 'none';
+
+  const PAD = { t:18, r:64, b:22, l:4 };
+  const cW = W - PAD.l - PAD.r;
+  const cH = H - PAD.t - PAD.b;
+
+  const slotW = Math.max(3, Math.min(40, btChartCandleW));
+  const bodyW = Math.max(1.5, slotW * 0.62);
+  const maxVisible = Math.max(1, Math.floor(cW / slotW));
+
+  btChartOffset = Math.max(0, Math.min(btChartOffset, data.length - 1));
+  const endIdx = Math.max(0, data.length - 1 - btChartOffset);
+  const startIdx = Math.max(0, endIdx - maxVisible + 1);
+  const vis = data.slice(startIdx, endIdx + 1);
+  if (!vis.length) return;
+
+  const trades = run.stats.trades.filter(t => t.sym === btChartSym);
+  const visibleTrades = trades.filter(t => (revealEpoch == null || t.openedAtEpoch <= revealEpoch));
+
+  let hi = -Infinity, lo = Infinity;
+  for (const c of vis) { if (c.high > hi) hi = c.high; if (c.low < lo) lo = c.low; }
+  for (const t of visibleTrades) {
+    if (t.openedAtEpoch >= vis[0].epoch) { hi = Math.max(hi, t.entry, t.exit); lo = Math.min(lo, t.entry, t.exit); }
+  }
+  const rng = (hi - lo) || (hi * 0.001) || 1;
+  const pad = rng * 0.08;
+  const maxP = hi + pad, minP = lo - pad, span = (maxP - minP) || 1;
+  const toY = p => PAD.t + cH - ((p - minP) / span) * cH;
+  const xAt = i => PAD.l + cW - (vis.length - 1 - i) * slotW - slotW/2;
+  // Map an arbitrary epoch to an x position using the nearest visible candle.
+  function xAtEpoch(epoch){
+    let idx = 0, best = Infinity;
+    for (let i = 0; i < vis.length; i++) { const d = Math.abs(vis[i].epoch - epoch); if (d < best) { best = d; idx = i; } }
+    return xAt(idx);
+  }
+
+  // grid + price labels
+  ctx.strokeStyle = '#131320'; ctx.lineWidth = 0.5;
+  const ROWS = 6;
+  for (let i = 0; i <= ROWS; i++) {
+    const y = PAD.t + (cH / ROWS) * i;
+    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + cW, y); ctx.stroke();
+    const p = maxP - (span / ROWS) * i;
+    ctx.fillStyle = '#3a3a58'; ctx.font = '8px "Space Mono"'; ctx.textAlign = 'left';
+    ctx.fillText(p.toFixed(dec), PAD.l + cW + 4, y + 3);
+  }
+
+  // time labels
+  ctx.fillStyle = '#2a2a40'; ctx.font = '8px "Space Mono"'; ctx.textAlign = 'center';
+  const timeStep = Math.max(1, Math.round(vis.length / 6));
+  for (let i = 0; i < vis.length; i += timeStep) {
+    const x = xAt(i);
+    const d = new Date(vis[i].epoch * 1000);
+    const lbl = (d.getUTCMonth()+1) + '/' + d.getUTCDate() + ' ' + d.getUTCHours().toString().padStart(2,'0') + ':' + d.getUTCMinutes().toString().padStart(2,'0');
+    ctx.fillText(lbl, x, PAD.t + cH + 14);
+  }
+
+  // candles
+  vis.forEach((c, i) => {
+    const x = xAt(i);
+    const up = c.close >= c.open;
+    const col = up ? '#00d4aa' : '#ff4455';
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, toY(c.high));
+    ctx.lineTo(x, toY(c.low));
+    ctx.stroke();
+    const yO = toY(c.open), yC = toY(c.close);
+    const top = Math.min(yO, yC), h = Math.max(1, Math.abs(yC - yO));
+    ctx.fillRect(x - bodyW/2, top, bodyW, h);
+  });
+
+  // EMA20/50 overlay, same as the live chart
+  const closesFull = data.map(c => c.close);
+  const emaFast = ema(closesFull, 20);
+  const emaSlow = ema(closesFull, 50);
+  function drawEmaLine(arr, color){
+    if (!arr) return;
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.beginPath();
+    let started = false;
+    vis.forEach((c, i) => {
+      const v = arr[startIdx + i];
+      if (v == null) return;
+      const x = xAt(i), y = toY(v);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+  drawEmaLine(emaSlow, 'rgba(245,166,35,0.65)');
+  drawEmaLine(emaFast, 'rgba(77,166,255,0.85)');
+
+  // ---------- Trade markers: entry, exit, connecting line, still-open lines ----------
+  visibleTrades.forEach(t => {
+    if (t.closedAtEpoch < vis[0].epoch && t.openedAtEpoch < vis[0].epoch) return; // fully off-screen to the left
+    const win = t.pnl > 0;
+    const outcomeColor = win ? '#00d4aa' : '#ff4455';
+    const dirColor = t.dir === 'bullish' ? '#4da6ff' : '#ff9500';
+    const isOpenStill = revealEpoch != null && t.closedAtEpoch > revealEpoch;
+    const xEntry = xAtEpoch(t.openedAtEpoch);
+    const yEntry = toY(t.entry);
+
+    if (isOpenStill) {
+      // Position hasn't closed yet at this point in the replay — draw it like a live open order.
+      ctx.save();
+      ctx.strokeStyle = outcomeColor; ctx.setLineDash([5,4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(xEntry, yEntry); ctx.lineTo(PAD.l + cW, yEntry); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    } else {
+      const xExit = xAtEpoch(t.closedAtEpoch);
+      const yExit = toY(t.exit);
+      ctx.save();
+      ctx.strokeStyle = outcomeColor; ctx.lineWidth = 1.3; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(xEntry, yEntry); ctx.lineTo(xExit, yExit); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(xExit, yExit, 3, 0, Math.PI*2); ctx.fillStyle = outcomeColor; ctx.fill();
+      ctx.restore();
+    }
+    ctx.save();
+    ctx.beginPath();
+    if (t.dir === 'bullish') { ctx.moveTo(xEntry, yEntry+5); ctx.lineTo(xEntry-4, yEntry-3); ctx.lineTo(xEntry+4, yEntry-3); }
+    else { ctx.moveTo(xEntry, yEntry-5); ctx.lineTo(xEntry-4, yEntry+3); ctx.lineTo(xEntry+4, yEntry+3); }
+    ctx.closePath(); ctx.fillStyle = dirColor; ctx.fill();
+    ctx.restore();
+  });
+
+  // last-visible-close reference line
+  const lastClose = vis[vis.length-1].close;
+  const yLast = toY(lastClose);
+  if (yLast >= PAD.t && yLast <= PAD.t + cH) {
+    ctx.save();
+    ctx.strokeStyle = '#8888aa'; ctx.setLineDash([4,4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(PAD.l, yLast); ctx.lineTo(PAD.l + cW, yLast); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#8888aa';
+    ctx.fillRect(PAD.l + cW, yLast - 7, PAD.r - 2, 14);
+    ctx.fillStyle = '#060608'; ctx.font = 'bold 9px "Space Mono"'; ctx.textAlign = 'left';
+    ctx.fillText(lastClose.toFixed(dec), PAD.l + cW + 4, yLast + 3);
+    ctx.restore();
+  }
+}
+
 // Renders full-width horizontal order lines for every open simulated position
 // on the currently active symbol — entry (blue=BUY / orange=SELL, solid),
 // TP (green, dashed) and SL (red, dashed) — each carrying an inline label with
@@ -995,13 +1199,19 @@ function setupChartInteraction(){
   let dragging = false, lastX = 0, lastOffset = 0;
 
   area.addEventListener('pointerdown', e => {
-    dragging = true; lastX = e.clientX; lastOffset = SYM[activeSymbol].chartOffset;
+    dragging = true; lastX = e.clientX; lastOffset = btChartActive ? btChartOffset : SYM[activeSymbol].chartOffset;
     area.setPointerCapture(e.pointerId);
   });
   area.addEventListener('pointermove', e => {
     if (!dragging) return;
-    const s = SYM[activeSymbol];
     const dx = e.clientX - lastX;
+    if (btChartActive) {
+      const slotW = Math.max(3, Math.min(40, btChartCandleW));
+      btChartOffset = Math.max(0, lastOffset + Math.round(dx / slotW));
+      drawChart();
+      return;
+    }
+    const s = SYM[activeSymbol];
     const slotW = Math.max(3, Math.min(40, s.chartCandleW));
     // dragging right (positive dx) reveals older candles → increase offset
     s.chartOffset = Math.max(0, lastOffset + Math.round(dx / slotW));
@@ -1014,8 +1224,13 @@ function setupChartInteraction(){
 
   area.addEventListener('wheel', e => {
     e.preventDefault();
-    const s = SYM[activeSymbol];
     const dir = e.deltaY > 0 ? -1 : 1;
+    if (btChartActive) {
+      btChartCandleW = Math.max(3, Math.min(40, btChartCandleW + dir));
+      drawChart();
+      return;
+    }
+    const s = SYM[activeSymbol];
     s.chartCandleW = Math.max(3, Math.min(40, s.chartCandleW + dir));
     drawChart();
   }, { passive:false });
@@ -1025,12 +1240,17 @@ function setupChartInteraction(){
   area.addEventListener('touchstart', e => {
     if (e.touches.length === 2) {
       pinchStartDist = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
-      pinchStartW = SYM[activeSymbol].chartCandleW;
+      pinchStartW = btChartActive ? btChartCandleW : SYM[activeSymbol].chartCandleW;
     }
   }, { passive:true });
   area.addEventListener('touchmove', e => {
     if (e.touches.length === 2 && pinchStartDist) {
       const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+      if (btChartActive) {
+        btChartCandleW = Math.max(3, Math.min(40, pinchStartW * (d / pinchStartDist)));
+        drawChart();
+        return;
+      }
       const s = SYM[activeSymbol];
       s.chartCandleW = Math.max(3, Math.min(40, pinchStartW * (d / pinchStartDist)));
       drawChart();
@@ -1043,6 +1263,16 @@ function setupChartInteraction(){
    SYMBOL / TIMEFRAME SWITCHING
    ============================================================ */
 function setActiveSymbol(key){
+  if (btChartActive) {
+    if (!btLastRun || !btLastRun.symbols.includes(key)) return; // that symbol wasn't part of this backtest run
+    btChartSym = key;
+    btChartOffset = 0;
+    document.querySelectorAll('.sym-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab' + key).classList.add('active');
+    btUpdateChartLabel();
+    drawChart();
+    return;
+  }
   activeSymbol = key;
   document.querySelectorAll('.sym-tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab' + key).classList.add('active');
@@ -1050,8 +1280,14 @@ function setActiveSymbol(key){
   drawChart();
 }
 function setTF(g){
+  document.querySelectorAll('.tfs .tf').forEach(b => b.classList.toggle('on', +b.dataset.g === g));
+  if (btChartActive) {
+    btChartTF = g;
+    btUpdateChartLabel();
+    drawChart();
+    return;
+  }
   activeTF = g;
-  document.querySelectorAll('.tf').forEach(b => b.classList.toggle('on', +b.dataset.g === g));
   document.getElementById('chartLabel').innerHTML = `${SYM[activeSymbol].label} · <b>${GRAN_LABEL[g]}</b>`;
   drawChart();
 }
@@ -2191,6 +2427,31 @@ async function fetchBinanceM1Range(startMs, endMs, cap, onProgress){
   return out.length > cap ? out.slice(out.length - cap) : out;
 }
 
+/* ---------- Uncapped aggregation for the main-chart backtest view ----------
+   btAppendM1() above is capped (it feeds the live-size rolling window the
+   strategy engines read during replay). The main chart needs the FULL
+   replayed history to pan/zoom through, so this rebuilds M5/M15 from the
+   complete M1 array once, after the run finishes, with no cap and no
+   mutation of the arrays used by the strategy replay. */
+function btBuildChartCandles(m1Candles){
+  const out = { 60: m1Candles.slice(), 300: [], 900: [] };
+  for (const gran of [300, 900]) {
+    const arr = out[gran];
+    for (const bar of m1Candles) {
+      const bucket = bucketEpoch(bar.epoch, gran);
+      const last = arr.length ? arr[arr.length-1] : null;
+      if (last && last.epoch === bucket) {
+        last.high = Math.max(last.high, bar.high);
+        last.low = Math.min(last.low, bar.low);
+        last.close = bar.close;
+      } else {
+        arr.push({ epoch:bucket, open:bar.open, high:bar.high, low:bar.low, close:bar.close });
+      }
+    }
+  }
+  return out;
+}
+
 /* ---------- Incremental candle building (mirrors processTick, bar-based) ---------- */
 function btMakeStore(){
   const store = { __isBacktest: true };
@@ -2516,7 +2777,10 @@ async function startBacktest(){
     }
     const capped = { XAU: dataBySym.XAU && dataBySym.XAU.length >= BT_M1_CAP.XAU, BTC: dataBySym.BTC && dataBySym.BTC.length >= BT_M1_CAP.BTC };
 
-    btLastRun = { stats, perSymStats, cfg, symbols, capped };
+    const chartCandles = {};
+    for (const sym of symbols) chartCandles[sym] = btBuildChartCandles(dataBySym[sym]);
+
+    btLastRun = { stats, perSymStats, cfg, symbols, capped, chartCandles };
     btRenderResults(btLastRun);
     logFeed(`Backtest complete — ${symbols.join('+')} · ${stats.numTrades} trades · net ${stats.netProfit>=0?'+':''}$${stats.netProfit.toFixed(2)} (${stats.returnPct.toFixed(1)}%)`);
 
@@ -2680,7 +2944,46 @@ function btDrawDrawdownCurve(curve, upToIdx, canvasId){
   ctx.strokeStyle = '#ff4455'; ctx.lineWidth = 1.2; ctx.stroke();
 }
 
-/* ---------- Visual replay player (scrubs through the precomputed run) ---------- */
+/* ---------- Main-chart backtest view: enter / exit / label ---------- */
+function btEnterChartView(sym){
+  if (!btLastRun) return;
+  const symbols = btLastRun.symbols;
+  btChartSym = (sym && symbols.includes(sym)) ? sym : (symbols.includes(activeSymbol) ? activeSymbol : symbols[0]);
+  btChartTF = activeTF;
+  btChartOffset = 0;
+  btChartCandleW = SYM[btChartSym].chartCandleW || 9;
+  btChartActive = true;
+  closeDrawer();
+  document.querySelectorAll('.sym-tab').forEach(t => t.classList.remove('active'));
+  const tab = document.getElementById('tab' + btChartSym);
+  if (tab) tab.classList.add('active');
+  document.getElementById('chartBtBadge').style.display = 'flex';
+  btUpdateChartLabel();
+  drawChart();
+}
+function btExitChartView(){
+  btChartActive = false;
+  btChartRevealIdx = null;
+  document.getElementById('chartBtBadge').style.display = 'none';
+  document.querySelectorAll('.sym-tab').forEach(t => t.classList.remove('active'));
+  const tab = document.getElementById('tab' + activeSymbol);
+  if (tab) tab.classList.add('active');
+  document.getElementById('chartLabel').innerHTML = `${SYM[activeSymbol].label} · <b>${GRAN_LABEL[activeTF]}</b>`;
+  drawChart();
+}
+function btUpdateChartLabel(){
+  const n = btLastRun ? btLastRun.stats.trades.filter(t => t.sym === btChartSym).length : 0;
+  document.getElementById('chartLabel').innerHTML = `⏮ BACKTEST REPLAY · ${SYM[btChartSym].label} · <b>${GRAN_LABEL[btChartTF]}</b> · ${n} trades`;
+}
+// Jumps the main chart straight to a full (non-animated) view of every
+// trade from the last completed run, with no replay cursor/scrub.
+function btShowFullOnChart(sym){
+  if (!btLastRun) return;
+  btChartRevealIdx = null;
+  btEnterChartView(sym);
+}
+
+/* ---------- Visual replay player (scrubs through the precomputed run, live on the main chart) ---------- */
 let btReplay = { playing:false, idx:0, speed:1, timer:null };
 
 function btPlayReplay(){
@@ -2692,6 +2995,8 @@ function btPlayReplay(){
   document.getElementById('rpScrub').max = btLastRun.stats.equityCurve.length - 1;
   document.getElementById('rpScrub').value = 0;
   document.getElementById('rpPause').textContent = '⏸ Pause';
+  btChartRevealIdx = 0;
+  btEnterChartView();
   btReplayTick();
 }
 function btReplayTick(){
@@ -2713,6 +3018,8 @@ function btUpdateReplayFrame(){
   document.getElementById('rpScrub').value = i;
   const pt = curve[i];
   document.getElementById('rpStatus').textContent = `${new Date(pt.epoch*1000).toLocaleDateString()} · $${pt.equity.toFixed(0)}`;
+  btChartRevealIdx = i;
+  if (btChartActive) { btUpdateChartLabel(); drawChart(); }
 }
 function btToggleReplayPause(){
   if (!btLastRun) return;
@@ -2733,6 +3040,7 @@ function btStopReplay(){
   btReplay.playing = false;
   clearTimeout(btReplay.timer);
   document.getElementById('replayControls').style.display = 'none';
+  btExitChartView();
 }
 
 /* ============================================================
