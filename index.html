@@ -277,18 +277,24 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
 .bt-trade-reason.tp{color:var(--green);border-color:var(--green-border);background:var(--green-dim)}
 .bt-trade-reason.sl{color:var(--red);border-color:var(--red-border);background:var(--red-dim)}
 .bt-trade-reason.be{color:var(--gold);border-color:var(--gold2);background:var(--gold-glow);width:30px}
-#replayControls{position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);display:none;align-items:center;gap:8px;padding:8px 10px;z-index:110;height:46px}
+#replayControls{position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);display:none;flex-direction:column;gap:5px;padding:6px 10px 8px;z-index:110}
+#replayControls .rc-row{display:flex;align-items:center;gap:8px}
 #replayControls button{font-family:var(--mono);font-size:10px;padding:5px 9px;border-radius:3px;cursor:pointer;border:1px solid;flex-shrink:0}
-#rpPause{background:var(--bg3);border-color:var(--border2);color:var(--text)}
-#rpPause:hover{border-color:var(--gold2);color:var(--gold)}
-#rpClose{background:var(--red-dim);border-color:var(--red-border);color:var(--red)}
-#rpClose:hover{background:var(--red);color:#fff}
+#rpPauseResume{background:var(--bg3);border-color:var(--border2);color:var(--text)}
+#rpPauseResume:hover{border-color:var(--gold2);color:var(--gold)}
+#rpStop{background:var(--red-dim);border-color:var(--red-border);color:var(--red)}
+#rpStop:hover{background:var(--red);color:#fff}
 #rpSpeed{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:9.5px;padding:4px;border-radius:3px;flex-shrink:0}
 #rpScrub{flex:1;height:3px;background:var(--border2);border-radius:2px;cursor:pointer;-webkit-appearance:none;outline:none;min-width:40px}
 #rpScrub::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--gold);cursor:pointer;border:2px solid var(--bg2)}
-#rpStatus{font-size:8.5px;color:var(--text3);font-family:var(--mono);white-space:nowrap;min-width:64px;text-align:right;flex-shrink:0}
+#rpStatusBadge{font-size:8.5px;font-weight:700;letter-spacing:.05em;padding:2px 6px;border-radius:3px;flex-shrink:0;font-family:var(--mono)}
+#rpStatusBadge.running{color:var(--green);background:var(--green-dim);border:1px solid var(--green-border)}
+#rpStatusBadge.paused{color:var(--gold);background:var(--gold-glow);border:1px solid var(--gold2)}
+#rpStatusBadge.done{color:var(--text2);background:var(--bg3);border:1px solid var(--border2)}
+#rpProgress,#rpSimTime,#rpRange{font-size:8.5px;color:var(--text3);font-family:var(--mono);white-space:nowrap;flex-shrink:0}
+#rpProgress{min-width:34px}
 .bt-summary-note{font-size:9px;color:var(--text3);line-height:1.7;margin-bottom:12px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px}
-@media(max-width:600px){ .bt-result-grid{grid-template-columns:1fr 1fr} #rpSpeed{display:none} }
+@media(max-width:600px){ .bt-result-grid{grid-template-columns:1fr 1fr} #rpSpeed{display:none} #rpRange{display:none} }
 
 /* ---------- Stage 5: manual start/stop, audit log, live performance ---------- */
 .bot-toggle{border-color:var(--red-border)!important;color:var(--red)!important;background:var(--red-dim)!important;font-weight:700!important}
@@ -383,6 +389,32 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
   <!-- ==================== DASHBOARD (scrollable, below chart) ==================== -->
   <div class="dash" id="viewDash">
 
+    <div class="section-title" id="btLiveDashTitle" style="display:none">▶ Backtest — Live Metrics <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0" id="btlDashSub">running…</span></div>
+    <div class="acct-grid" id="btLiveDashGrid" style="display:none">
+      <div class="acct-cell"><span class="acct-lbl">Starting Balance</span><span class="acct-val" id="btlStart">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Balance</span><span class="acct-val au" id="btlBalance">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Equity</span><span class="acct-val" id="btlEquity">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Net P/L</span><span class="acct-val" id="btlNet">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Return %</span><span class="acct-val" id="btlReturn">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Drawdown</span><span class="acct-val" id="btlDD">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Max Drawdown</span><span class="acct-val" id="btlMaxDD">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Trades</span><span class="acct-val" id="btlTrades">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Win / Loss</span><span class="acct-val" id="btlWL">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Win Rate</span><span class="acct-val" id="btlWinRate">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Profit Factor</span><span class="acct-val" id="btlPF">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Current Position</span><span class="acct-val" id="btlPosition">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Current Risk</span><span class="acct-val" id="btlRisk">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Strategy / Bias</span><span class="acct-val" id="btlBias">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Market Regime</span><span class="acct-val" id="btlRegime">—</span></div>
+    </div>
+    <div class="target-visual" id="btLiveTargetVisual" style="display:none">
+      <div class="tv-txt"><span class="tv-lbl">Backtest Target</span><span class="tv-val" id="btlTargetVal">$0 → $0</span></div>
+      <div class="target-bar-track"><div class="target-bar-fill" id="btlTargetBarFill"></div></div>
+      <span class="target-pct" id="btlTargetPct">0%</span>
+    </div>
+    <div class="small-note" id="btlTargetAchievedNote" style="display:none;color:var(--green);margin-bottom:10px"></div>
+
+    <div id="paperAccountBlock">
     <div class="section-title">Paper Account <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0" id="acctSubLabel">simulated — no broker connected</span></div>
     <div class="acct-grid">
       <div class="acct-cell"><span class="acct-lbl">Balance</span><span class="acct-val au" id="accBalance">—</span></div>
@@ -391,12 +423,15 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
       <div class="acct-cell"><span class="acct-lbl">Daily P/L</span><span class="acct-val" id="accDaily">—</span></div>
       <div class="acct-cell"><span class="acct-lbl">Drawdown</span><span class="acct-val" id="accDD">—</span></div>
       <div class="acct-cell"><span class="acct-lbl">Open Positions</span><span class="acct-val" id="accPositions">0</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Margin Used</span><span class="acct-val" id="accMarginUsed">—</span></div>
+      <div class="acct-cell"><span class="acct-lbl">Free Margin</span><span class="acct-val" id="accFreeMargin">—</span></div>
     </div>
 
     <div class="target-visual">
       <div class="tv-txt"><span class="tv-lbl">Profit Target</span><span class="tv-val" id="tvTargetVal">$0 → $0</span></div>
       <div class="target-bar-track"><div class="target-bar-fill" id="targetBarFill"></div></div>
       <span class="target-pct" id="targetPct">0%</span>
+    </div>
     </div>
 
   </div>
@@ -416,17 +451,26 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
   <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
 
   <div id="replayControls">
-    <button id="rpPause" onclick="btToggleReplayPause()">⏸ Pause</button>
-    <select id="rpSpeed" onchange="btSetReplaySpeed(this.value)">
-      <option value="0.5">0.5×</option>
-      <option value="1" selected>1×</option>
-      <option value="4">4×</option>
-      <option value="20">20×</option>
-      <option value="80">80×</option>
-    </select>
-    <input type="range" id="rpScrub" min="0" max="1000" value="0" oninput="btScrubReplay(this.value)">
-    <span id="rpStatus">—</span>
-    <button id="rpClose" onclick="btStopReplay()">✕</button>
+    <div class="rc-row">
+      <button id="rpPauseResume" onclick="btToggleReplayPause()">⏸ Pause</button>
+      <button id="rpStop" onclick="btStopReplay()">■ Stop</button>
+      <select id="rpSpeed" onchange="btSetReplaySpeed(this.value)">
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="5">5×</option>
+        <option value="10">10×</option>
+        <option value="25">25×</option>
+        <option value="50">50×</option>
+      </select>
+      <input type="range" id="rpScrub" min="0" max="1000" value="0" oninput="btScrubReplay(this.value)" style="display:none">
+    </div>
+    <div class="rc-row">
+      <span id="rpStatusBadge" class="running">BACKTEST — RUNNING</span>
+      <span id="rpProgress">0%</span>
+      <span id="rpSimTime">—</span>
+      <span id="rpRange">— → —</span>
+    </div>
   </div>
 
   <div class="drawer" id="drawerFeed">
@@ -545,6 +589,24 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
             <span style="font-size:10px;color:var(--text2)">Move SL to breakeven at +1R</span>
             <label class="switch"><input type="checkbox" id="btBreakeven" checked><span class="slider-tg"></span></label>
           </div>
+          <div class="field-row">
+            <div class="field"><label>Minimum Lot Size</label><input class="acct-input" type="number" id="btMinLot" min="0.01" step="0.01" oninput="validateBtLotConfig()"></div>
+            <div class="field"><label>Maximum Lot Size</label><input class="acct-input" type="number" id="btMaxLot" min="0.01" step="0.01" oninput="validateBtLotConfig()"></div>
+          </div>
+          <div class="field">
+            <label>Leverage</label>
+            <select class="acct-input" id="btLeverage">
+              <option value="10">1:10</option>
+              <option value="20">1:20</option>
+              <option value="30">1:30</option>
+              <option value="50">1:50</option>
+              <option value="100">1:100</option>
+              <option value="200">1:200</option>
+              <option value="500">1:500</option>
+              <option value="1000">1:1000</option>
+            </select>
+          </div>
+          <div class="small-note" id="btLotConfigError" style="margin-top:0;display:none;color:var(--red)"></div>
         </div>
 
         <div class="bt-progress-wrap" id="btProgressWrap">
@@ -642,6 +704,28 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
           <label class="switch"><input type="checkbox" id="cfgAutoEnter" checked><span class="slider-tg"></span></label>
         </div>
         <div class="small-note" style="margin-top:0">Both this toggle AND the Start Bot control above must be on for any simulated trade to be taken.</div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Lot Size &amp; Leverage</div>
+        <div class="field-row">
+          <div class="field"><label>Minimum Lot Size</label><input class="acct-input" type="number" id="cfgMinLot" min="0.01" step="0.01" oninput="validateLotConfig()"></div>
+          <div class="field"><label>Maximum Lot Size</label><input class="acct-input" type="number" id="cfgMaxLot" min="0.01" step="0.01" oninput="validateLotConfig()"></div>
+        </div>
+        <div class="field">
+          <label>Leverage</label>
+          <select class="acct-input" id="cfgLeverage">
+            <option value="10">1:10</option>
+            <option value="20">1:20</option>
+            <option value="30">1:30</option>
+            <option value="50">1:50</option>
+            <option value="100">1:100</option>
+            <option value="200">1:200</option>
+            <option value="500">1:500</option>
+            <option value="1000">1:1000</option>
+          </select>
+        </div>
+        <div class="small-note" id="lotConfigError" style="margin-top:0;display:none;color:var(--red)"></div>
+        <div class="small-note" style="margin-top:0">The risk engine sizes every simulated position from your risk %, stop-loss distance, and symbol contract size, then clamps the result into this Min–Max lot range and checks it against margin at the selected leverage — a wider lot range or higher leverage never overrides the daily-loss/drawdown hard limits above.</div>
       </div>
       <div class="settings-section">
         <button class="btn btn-outline" onclick="saveAccountConfig()">Save settings</button>
@@ -1815,6 +1899,9 @@ const DEFAULT_ACCOUNT_CFG = {
   maxDailyLossPct: 3,
   breakeven: true,
   autoEnter: true,
+  minLot: 0.01,
+  maxLot: 5,
+  leverage: 100,
 };
 
 let ACCOUNT = null;
@@ -1898,9 +1985,38 @@ function fillAccountForm(){
   document.getElementById('cfgMaxDailyLoss').value = ACCOUNT.cfg.maxDailyLossPct;
   document.getElementById('cfgBreakeven').checked = !!ACCOUNT.cfg.breakeven;
   document.getElementById('cfgAutoEnter').checked = !!ACCOUNT.cfg.autoEnter;
+  document.getElementById('cfgMinLot').value = ACCOUNT.cfg.minLot;
+  document.getElementById('cfgMaxLot').value = ACCOUNT.cfg.maxLot;
+  document.getElementById('cfgLeverage').value = String(ACCOUNT.cfg.leverage);
+  validateLotConfig();
+}
+
+// Returns {ok, minLot, maxLot} — does NOT write anything. Used both to gate
+// saveAccountConfig() and to give live inline feedback as the user types.
+function validateLotConfig(){
+  const errEl = document.getElementById('lotConfigError');
+  const minLot = +document.getElementById('cfgMinLot').value;
+  const maxLot = +document.getElementById('cfgMaxLot').value;
+  let msg = '';
+  if (!(minLot > 0)) msg = 'Minimum lot size must be greater than 0.';
+  else if (!(maxLot > 0)) msg = 'Maximum lot size must be greater than 0.';
+  else if (minLot > maxLot) msg = 'Minimum Lot Size must be ≤ Maximum Lot Size.';
+  const ok = !msg;
+  if (errEl) {
+    errEl.style.display = ok ? 'none' : 'block';
+    errEl.textContent = msg;
+  }
+  const saveBtn = document.querySelector('#drawerAccount .settings-section button.btn-outline[onclick="saveAccountConfig()"]');
+  if (saveBtn) saveBtn.disabled = !ok;
+  return { ok, minLot, maxLot };
 }
 
 function saveAccountConfig(){
+  const lotCheck = validateLotConfig();
+  if (!lotCheck.ok) {
+    alert('Fix the Lot Size & Leverage settings before saving: ' + document.getElementById('lotConfigError').textContent);
+    return;
+  }
   const startBal = Math.max(10, +document.getElementById('cfgStartBalance').value || DEFAULT_ACCOUNT_CFG.startingBalance);
   const target = Math.max(0, +document.getElementById('cfgProfitTarget').value || 0);
   const prevStartingBalance = ACCOUNT.cfg.startingBalance;
@@ -1913,6 +2029,9 @@ function saveAccountConfig(){
     maxDailyLossPct: Math.min(20, Math.max(0.5, +document.getElementById('cfgMaxDailyLoss').value || DEFAULT_ACCOUNT_CFG.maxDailyLossPct)),
     breakeven: document.getElementById('cfgBreakeven').checked,
     autoEnter: document.getElementById('cfgAutoEnter').checked,
+    minLot: lotCheck.minLot,
+    maxLot: lotCheck.maxLot,
+    leverage: Math.max(1, +document.getElementById('cfgLeverage').value || DEFAULT_ACCOUNT_CFG.leverage),
   };
 
   // Keep the Paper Account panel on the main interface in sync with what was
@@ -1930,7 +2049,7 @@ function saveAccountConfig(){
   persistAccount();
   updateAccountUI();
   updateModeBadge(); // reflects Auto-enter changes on the main mode-strip badge immediately
-  logFeed(`Account settings saved — start $${ACCOUNT.cfg.startingBalance}, target $${ACCOUNT.cfg.profitTarget}, risk ${ACCOUNT.cfg.riskPct}%/trade, RR 1:${ACCOUNT.cfg.rrRatio}`, 'config');
+  logFeed(`Account settings saved — start $${ACCOUNT.cfg.startingBalance}, target $${ACCOUNT.cfg.profitTarget}, risk ${ACCOUNT.cfg.riskPct}%/trade, RR 1:${ACCOUNT.cfg.rrRatio}, lot ${ACCOUNT.cfg.minLot}–${ACCOUNT.cfg.maxLot}, leverage 1:${ACCOUNT.cfg.leverage}`, 'config');
 }
 
 function resetSimulation(){
@@ -2020,12 +2139,32 @@ function maybeEnterTrade(sym){
   const entry = price;
   const sl = entry - sign * slDist;
   const tp = entry + sign * slDist * ACCOUNT.cfg.rrRatio;
-  const riskAmount = ACCOUNT.balance * (ACCOUNT.cfg.riskPct / 100);
-  const units = riskAmount / slDist;
+  const idealRiskAmount = ACCOUNT.balance * (ACCOUNT.cfg.riskPct / 100);
+  const idealUnits = idealRiskAmount / slDist;
+
+  // Clamp the risk-derived size into the user's configured Min/Max Lot Size
+  // (this can only ever shrink the position toward the risk limit or, at
+  // most, size it up to maxLot — it never bypasses the daily-loss/drawdown
+  // hard gates already checked in safetyGate() above).
+  const perLot = sym === 'XAU' ? 100 : 1;
+  let lots = idealUnits / perLot;
+  lots = Math.min(ACCOUNT.cfg.maxLot, Math.max(ACCOUNT.cfg.minLot, lots));
+  const units = lots * perLot;
+  const riskAmount = Math.abs(units * slDist);
+
+  // Margin check at the configured leverage: never open a position that
+  // would require more margin than is currently free.
+  const marginInUse = ACCOUNT.openPositions.reduce((s,p) => s + Math.abs(p.units) * (SYM[p.sym].price || p.entry) / ACCOUNT.cfg.leverage, 0);
+  const requiredMargin = units * entry / ACCOUNT.cfg.leverage;
+  const freeMargin = computeEquity() - marginInUse;
+  if (requiredMargin > freeMargin) {
+    logFeed(`[${SYM[sym].label}] entry skipped — required margin $${requiredMargin.toFixed(2)} exceeds free margin $${freeMargin.toFixed(2)} at 1:${ACCOUNT.cfg.leverage} leverage`, 'risk');
+    return;
+  }
 
   const pos = {
     id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
-    sym, dir, entry, sl, tp, units, riskAmount,
+    sym, dir, entry, sl, tp, units, riskAmount, lots,
     slDist, rr: ACCOUNT.cfg.rrRatio,
     openedAt: Date.now(), beMoved: false,
     scoreAtEntry: analysis.score,
@@ -2033,7 +2172,7 @@ function maybeEnterTrade(sym){
   ACCOUNT.openPositions.push(pos);
   persistAccount();
   updatePositionUIField(sym, pos);
-  logFeed(`[${SYM[sym].label}] SIM ${dir.toUpperCase()} opened @ ${entry.toFixed(SYM[sym].decimals)} · SL ${sl.toFixed(SYM[sym].decimals)} · TP ${tp.toFixed(SYM[sym].decimals)} · risk $${riskAmount.toFixed(2)} (score ${analysis.score})`, 'trade');
+  logFeed(`[${SYM[sym].label}] SIM ${dir.toUpperCase()} opened @ ${entry.toFixed(SYM[sym].decimals)} · ${lots.toFixed(2)} lots · SL ${sl.toFixed(SYM[sym].decimals)} · TP ${tp.toFixed(SYM[sym].decimals)} · risk $${riskAmount.toFixed(2)} (score ${analysis.score})`, 'trade');
   renderPositionsDrawer();
   if (activeSymbol === sym) drawChart();
 }
@@ -2124,6 +2263,9 @@ function updateAccountUI(){
   ddEl.textContent = dd.toFixed(2) + '%';
   ddEl.className = 'acct-val ' + (dd > 5 ? 'r' : '');
   document.getElementById('accPositions').textContent = ACCOUNT.openPositions.length;
+  const marginUsed = ACCOUNT.openPositions.reduce((s,p) => s + Math.abs(p.units) * (SYM[p.sym].price || p.entry) / ACCOUNT.cfg.leverage, 0);
+  document.getElementById('accMarginUsed').textContent = '$' + marginUsed.toFixed(2);
+  document.getElementById('accFreeMargin').textContent = '$' + Math.max(0, equity - marginUsed).toFixed(2);
 
   // profit target bar
   const start = ACCOUNT.cfg.startingBalance, target = ACCOUNT.cfg.profitTarget;
@@ -2314,6 +2456,7 @@ const BT_M1_CAP = { XAU: 14000, BTC: 16000 }; // browser-side safety cap on repl
 let btSymFilter = 'XAU';
 let btCancelFlag = false;
 let btLastRun = null; // { perSym: {XAU:{...}, BTC:{...}}, combined:{...} }
+let btLiveCtl = null; // { paused, cancelled, speed, idx } — drives the live on-chart replay loop while a backtest is running
 
 function btSetSym(v){
   btSymFilter = v;
@@ -2336,6 +2479,25 @@ function btInitDefaults(){
   document.getElementById('btMaxDD').value = 20;
   document.getElementById('btMaxTrades').value = 0;
   document.getElementById('btCompounding').checked = true;
+  document.getElementById('btMinLot').value = ACCOUNT.cfg.minLot;
+  document.getElementById('btMaxLot').value = ACCOUNT.cfg.maxLot;
+  document.getElementById('btLeverage').value = String(ACCOUNT.cfg.leverage);
+}
+
+function validateBtLotConfig(){
+  const errEl = document.getElementById('btLotConfigError');
+  const minLot = +document.getElementById('btMinLot').value;
+  const maxLot = +document.getElementById('btMaxLot').value;
+  let msg = '';
+  if (!(minLot > 0)) msg = 'Minimum lot size must be greater than 0.';
+  else if (!(maxLot > 0)) msg = 'Maximum lot size must be greater than 0.';
+  else if (minLot > maxLot) msg = 'Minimum Lot Size must be ≤ Maximum Lot Size.';
+  const ok = !msg;
+  errEl.style.display = ok ? 'none' : 'block';
+  errEl.textContent = msg;
+  const runBtn = document.getElementById('btRunBtn');
+  if (runBtn) runBtn.disabled = !ok;
+  return { ok, minLot, maxLot };
 }
 
 function btBackToConfig(){
@@ -2575,11 +2737,22 @@ function btMaybeEnter(acc, sym, analysis, bar, cfg, store){
   const sl = entry - sign * slDist;
   const tp = entry + sign * slDist * cfg.rrRatio;
   const riskBase = cfg.compounding ? acc.balance : cfg.startingBalance;
-  const riskAmount = riskBase * (cfg.riskPct / 100);
-  const units = riskAmount / slDist;
+  const idealRiskAmount = riskBase * (cfg.riskPct / 100);
+  const idealUnits = idealRiskAmount / slDist;
+
+  const perLot = sym === 'XAU' ? 100 : 1;
+  let lots = idealUnits / perLot;
+  lots = Math.min(cfg.maxLot, Math.max(cfg.minLot, lots));
+  const units = lots * perLot;
+  const riskAmount = Math.abs(units * slDist);
+
+  const marginInUse = acc.openPositions.reduce((s,p) => s + Math.abs(p.units) * (store[p.sym].price || p.entry) / cfg.leverage, 0);
+  const requiredMargin = units * entry / cfg.leverage;
+  const freeMargin = btEquity(acc, (s) => store[s].price) - marginInUse;
+  if (requiredMargin > freeMargin) return; // margin call protection — skip this entry
 
   acc.openPositions.push({
-    sym, dir, entry, sl, tp, units, riskAmount, slDist, rr: cfg.rrRatio,
+    sym, dir, entry, sl, tp, units, riskAmount, lots, slDist, rr: cfg.rrRatio,
     openedAtEpoch: bar.epoch, beMoved:false, scoreAtEntry: analysis.score,
   });
   if (cfg.maxTrades > 0 && (acc.closedTrades.length + acc.openPositions.length) >= cfg.maxTrades) {
@@ -2679,6 +2852,13 @@ async function startBacktest(){
   const endEpoch = toEpochSec(document.getElementById('btEndDate').value, true);
   if (!(endEpoch > startEpoch)) { alert('End date must be after start date.'); return; }
 
+  const btLotCheck = validateBtLotConfig();
+  if (!btLotCheck.ok) {
+    alert('Fix the Lot Size settings before running: ' + document.getElementById('btLotConfigError').textContent);
+    return;
+  }
+  const btMinLot = btLotCheck.minLot, btMaxLot = btLotCheck.maxLot;
+
   const cfg = {
     startingBalance: Math.max(10, +document.getElementById('btStartBalance').value || 1000),
     profitTarget: Math.max(0, +document.getElementById('btProfitTarget').value || 0),
@@ -2691,6 +2871,9 @@ async function startBacktest(){
     maxTrades: Math.max(0, +document.getElementById('btMaxTrades').value || 0),
     breakeven: document.getElementById('btBreakeven').checked,
     compounding: document.getElementById('btCompounding').checked,
+    minLot: btMinLot,
+    maxLot: btMaxLot,
+    leverage: Math.max(1, +document.getElementById('btLeverage').value || DEFAULT_ACCOUNT_CFG.leverage),
   };
 
   document.getElementById('btRunBtn').disabled = true;
@@ -2700,31 +2883,22 @@ async function startBacktest(){
   const progTxt = document.getElementById('btProgressTxt');
   progWrap.style.display = 'block';
   progFill.style.width = '3%';
-  progTxt.textContent = 'Fetching historical candles…';
+  progTxt.textContent = 'FETCHING HISTORICAL DATA…';
 
   try {
     const dataBySym = {};
     for (const sym of symbols) {
-      progTxt.textContent = `Fetching ${SYM[sym].label} history…`;
+      progTxt.textContent = `FETCHING HISTORICAL DATA… (${SYM[sym].label})`;
       if (sym === 'XAU') {
         dataBySym.XAU = await fetchDerivM1Range(startEpoch, endEpoch, BT_M1_CAP.XAU,
-          (n) => { progFill.style.width = Math.min(45, 5 + n/50) + '%'; progTxt.textContent = `Fetching XAUUSD history… ${n} bars`; });
+          (n) => { progFill.style.width = Math.min(45, 5 + n/50) + '%'; progTxt.textContent = `FETCHING HISTORICAL DATA… XAUUSD · ${n} bars`; });
       } else {
         dataBySym.BTC = await fetchBinanceM1Range(startEpoch*1000, endEpoch*1000, BT_M1_CAP.BTC,
-          (n) => { progFill.style.width = Math.min(45, 5 + n/50) + '%'; progTxt.textContent = `Fetching BTCUSD history… ${n} bars`; });
+          (n) => { progFill.style.width = Math.min(45, 5 + n/50) + '%'; progTxt.textContent = `FETCHING HISTORICAL DATA… BTCUSD · ${n} bars`; });
       }
       if (btCancelFlag) throw new Error('__cancelled__');
     }
 
-    progTxt.textContent = 'Replaying strategy engines bar by bar…';
-    progFill.style.width = '55%';
-    await new Promise(r => setTimeout(r, 30)); // let the progress paint before the sync loop
-
-    const store = btMakeStore();
-    const sharedAccount = btNewAccount(cfg);
-
-    // If replaying both symbols, merge & sort by epoch so they share one
-    // account timeline (matches how Combined mode would trade live).
     let timeline;
     if (symbols.length === 2) {
       timeline = dataBySym.XAU.map(b => ({ sym:'XAU', bar:b }))
@@ -2733,36 +2907,36 @@ async function startBacktest(){
     } else {
       timeline = dataBySym[symbols[0]].map(b => ({ sym:symbols[0], bar:b }));
     }
+    if (!timeline.length) throw new Error('No historical candles returned for that range — historical data unavailable for this range.');
 
-    if (!timeline.length) throw new Error('No historical candles returned for that range.');
+    progFill.style.width = '50%';
+    progTxt.textContent = 'DATA READY — STARTING BACKTEST';
+    await new Promise(r => setTimeout(r, 250)); // let the "data ready" state be visible before the chart takes over
+    progWrap.style.display = 'none';
+    document.getElementById('btCancelBtn').style.display = 'none';
 
-    for (let i = 0; i < timeline.length; i++) {
-      if (btCancelFlag) throw new Error('__cancelled__');
-      const { sym, bar } = timeline[i];
-      const dayStr = btDayStr(bar.epoch);
-      if (sharedAccount.dailyDateStr !== dayStr) {
-        sharedAccount.dailyDateStr = dayStr;
-        sharedAccount.dailyStartBalance = btEquity(sharedAccount, (s) => store[s].price);
-      }
-      btAppendM1(store, sym, bar);
-      btManagePositions(sharedAccount, sym, bar, cfg);
-      const analysis = computeScore(sym, store);
-      const equity = btEquity(sharedAccount, (s) => store[s].price);
-      sharedAccount.peakEquity = Math.max(sharedAccount.peakEquity, equity);
-      const dd = sharedAccount.peakEquity > 0 ? (sharedAccount.peakEquity - equity) / sharedAccount.peakEquity * 100 : 0;
-      if (dd >= cfg.maxDDPct) sharedAccount.haltedByDD = true;
-      if (!sharedAccount.targetHitAt && cfg.profitTarget > 0 && equity >= cfg.startingBalance + cfg.profitTarget) {
-        sharedAccount.targetHitAt = bar.epoch;
-      }
-      btMaybeEnter(sharedAccount, sym, analysis, bar, cfg, store);
-      sharedAccount.equityCurve.push({ epoch: bar.epoch, equity });
+    const store = btMakeStore();
+    const sharedAccount = btNewAccount(cfg);
+    const chartCandles = {};
+    for (const sym of symbols) chartCandles[sym] = btBuildChartCandles(dataBySym[sym]);
+    const capped = { XAU: dataBySym.XAU && dataBySym.XAU.length >= BT_M1_CAP.XAU, BTC: dataBySym.BTC && dataBySym.BTC.length >= BT_M1_CAP.BTC };
 
-      if (i % 800 === 0) {
-        progFill.style.width = (55 + (i/timeline.length)*40) + '%';
-        progTxt.textContent = `Replaying… ${i}/${timeline.length} bars · ${sharedAccount.closedTrades.length} trades so far`;
-        await new Promise(r => setTimeout(r, 0)); // yield to keep UI responsive
-      }
-    }
+    // Publish btLastRun BEFORE the loop runs — drawBacktestChart(), the trade
+    // log and the live dashboard all read from these same objects, and
+    // sharedAccount.closedTrades / .equityCurve are mutated in place bar by
+    // bar below, so the exact arrays the backtest engine writes to are the
+    // ones the chart and dashboard render from. There is no separate replay
+    // event stream — the chart IS the backtest engine's state.
+    btLastRun = {
+      stats: { trades: sharedAccount.closedTrades, equityCurve: sharedAccount.equityCurve, drawdownCurve: [] },
+      perSymStats: null, cfg, symbols, capped, chartCandles, acc: sharedAccount, live: true,
+    };
+
+    btEnterChartView(symbols[0]);
+    btLiveDashboardShow(cfg, startEpoch, endEpoch);
+    logFeed(`Backtest started — ${symbols.join('+')} · ${new Date(startEpoch*1000).toLocaleDateString()} → ${new Date(endEpoch*1000).toLocaleDateString()}`, 'config');
+
+    await btRunLiveLoop(timeline, sharedAccount, store, cfg, symbols, startEpoch, endEpoch);
 
     const stats = btComputeStats(sharedAccount, cfg);
     let perSymStats = null;
@@ -2775,30 +2949,237 @@ async function startBacktest(){
         perSymStats[sym] = { trades:t.length, netPnl: t.reduce((s,x)=>s+x.pnl,0), winRate: t.length ? t.filter(x=>x.pnl>0).length/t.length*100 : 0, profitFactor: gl>0 ? gw/gl : (gw>0?Infinity:0) };
       }
     }
-    const capped = { XAU: dataBySym.XAU && dataBySym.XAU.length >= BT_M1_CAP.XAU, BTC: dataBySym.BTC && dataBySym.BTC.length >= BT_M1_CAP.BTC };
-
-    const chartCandles = {};
-    for (const sym of symbols) chartCandles[sym] = btBuildChartCandles(dataBySym[sym]);
 
     btLastRun = { stats, perSymStats, cfg, symbols, capped, chartCandles };
+    btChartRevealIdx = null; // full reveal — the final chart state is preserved as-is
     btRenderResults(btLastRun);
     logFeed(`Backtest complete — ${symbols.join('+')} · ${stats.numTrades} trades · net ${stats.netProfit>=0?'+':''}$${stats.netProfit.toFixed(2)} (${stats.returnPct.toFixed(1)}%)`);
+    await btTransitionToLive(stats);
 
   } catch (e) {
     if (e.message !== '__cancelled__') {
+      progWrap.style.display = 'block';
+      progTxt.textContent = 'BACKTEST FAILED — HISTORICAL DATA UNAVAILABLE';
+      progFill.style.width = '100%';
       alert('Backtest failed: ' + e.message);
-      logFeed('Backtest error: ' + e.message);
+      logFeed('BACKTEST FAILED — HISTORICAL DATA UNAVAILABLE: ' + e.message, 'error');
+      setTimeout(() => { progWrap.style.display = 'none'; }, 3000);
     } else {
       logFeed('Backtest cancelled');
+      btLiveDashboardHide();
+      btExitChartView();
     }
   } finally {
     document.getElementById('btRunBtn').disabled = false;
     document.getElementById('btCancelBtn').style.display = 'none';
-    progWrap.style.display = 'none';
+    document.getElementById('replayControls').style.display = 'none';
   }
 }
 
-function cancelBacktest(){ btCancelFlag = true; }
+function cancelBacktest(){
+  btCancelFlag = true;
+  if (btLiveCtl) btLiveCtl.cancelled = true;
+}
+
+/* ============================================================
+   LIVE ON-CHART REPLAY LOOP
+   ------------------------------------------------------------
+   Runs the exact same per-bar logic as the old synchronous loop
+   (btAppendM1 → btManagePositions → computeScore → equity/DD/
+   target checks → btMaybeEnter) but paced with setTimeout instead
+   of run start-to-finish, yielding to the browser after every
+   batch so the main chart and dashboard repaint mid-computation.
+   "Speed" scales how many bars are processed per repaint, not the
+   trading logic itself — the same historical sequence produces
+   the same trades at 0.5× or 50×. Returns a Promise that resolves
+   when the timeline is exhausted and rejects with '__cancelled__'
+   if the user hits Stop.
+   ============================================================ */
+function btRunLiveLoop(timeline, acc, store, cfg, symbols, startEpoch, endEpoch){
+  return new Promise((resolve, reject) => {
+    btLiveCtl = { paused:false, cancelled:false, speed:1, idx:0 };
+    const total = timeline.length;
+    let lastAnalysis = {};
+    let targetAnnounced = false;
+
+    document.getElementById('replayControls').style.display = 'flex';
+    document.getElementById('rpScrub').style.display = 'none';
+    document.getElementById('rpPauseResume').textContent = '⏸ Pause';
+    document.getElementById('rpPauseResume').onclick = btLiveTogglePause;
+    document.getElementById('rpStop').onclick = () => { btLiveCtl.cancelled = true; btCancelFlag = true; };
+    document.getElementById('rpSpeed').value = '1';
+    document.getElementById('rpRange').textContent = `${new Date(startEpoch*1000).toLocaleDateString()} → ${new Date(endEpoch*1000).toLocaleDateString()}`;
+    btLiveSetStatus('running', 'BACKTEST — RUNNING');
+
+    function step(){
+      if (btLiveCtl.cancelled) { reject(new Error('__cancelled__')); return; }
+      if (btLiveCtl.paused) { btLiveCtl.timer = setTimeout(step, 120); return; }
+
+      // Higher speed = more bars processed (and one repaint) per tick, not a
+      // shorter per-bar delay — this is what keeps the trading decisions
+      // identical regardless of replay speed while still speeding up how
+      // fast the chart visibly progresses.
+      const barsPerTick = Math.max(1, Math.round(3 * btLiveCtl.speed));
+      let i = btLiveCtl.idx;
+      const end = Math.min(total, i + barsPerTick);
+      for (; i < end; i++) {
+        const { sym, bar } = timeline[i];
+        const dayStr = btDayStr(bar.epoch);
+        if (acc.dailyDateStr !== dayStr) {
+          acc.dailyDateStr = dayStr;
+          acc.dailyStartBalance = btEquity(acc, (s) => store[s].price);
+        }
+        btAppendM1(store, sym, bar);
+        btManagePositions(acc, sym, bar, cfg);
+        const analysis = computeScore(sym, store);
+        lastAnalysis[sym] = analysis;
+        const equity = btEquity(acc, (s) => store[s].price);
+        acc.peakEquity = Math.max(acc.peakEquity, equity);
+        const dd = acc.peakEquity > 0 ? (acc.peakEquity - equity) / acc.peakEquity * 100 : 0;
+        if (dd >= cfg.maxDDPct) acc.haltedByDD = true;
+        if (!acc.targetHitAt && cfg.profitTarget > 0 && equity >= cfg.startingBalance + cfg.profitTarget) {
+          acc.targetHitAt = bar.epoch;
+        }
+        btMaybeEnter(acc, sym, analysis, bar, cfg, store);
+        acc.equityCurve.push({ epoch: bar.epoch, equity });
+      }
+      btLiveCtl.idx = i;
+
+      if (acc.targetHitAt && !targetAnnounced) {
+        targetAnnounced = true;
+        logFeed(`Backtest profit target ($${cfg.profitTarget}) reached at ${new Date(acc.targetHitAt*1000).toLocaleString()} — continuing to run (target is a milestone, not a stop condition)`, 'risk');
+      }
+
+      // repaint: chart follows the latest processed bar automatically
+      // because btChartOffset stays 0 and revealIdx tracks equityCurve end.
+      btChartRevealIdx = acc.equityCurve.length - 1;
+      btUpdateChartLabel();
+      drawChart();
+      btLiveUpdateDashboard(acc, cfg, symbols, lastAnalysis);
+      btLiveUpdateControlBar(i, total, timeline[Math.max(0,i-1)].bar.epoch, startEpoch, endEpoch, acc, cfg);
+
+      if (i >= total) { resolve(); return; }
+      btLiveCtl.timer = setTimeout(step, 16);
+    }
+    step();
+  });
+}
+
+function btLiveTogglePause(){
+  if (!btLiveCtl) return;
+  btLiveCtl.paused = !btLiveCtl.paused;
+  document.getElementById('rpPauseResume').textContent = btLiveCtl.paused ? '▶ Resume' : '⏸ Pause';
+  btLiveSetStatus(btLiveCtl.paused ? 'paused' : 'running', btLiveCtl.paused ? 'BACKTEST — PAUSED' : 'BACKTEST — RUNNING');
+}
+
+function btLiveSetStatus(cls, text){
+  const el = document.getElementById('rpStatusBadge');
+  el.className = cls;
+  el.textContent = text;
+}
+
+function btLiveUpdateControlBar(i, total, lastEpoch, startEpoch, endEpoch, acc, cfg){
+  const pct = Math.min(100, (i / total) * 100);
+  document.getElementById('rpProgress').textContent = pct.toFixed(0) + '%';
+  document.getElementById('rpSimTime').textContent = new Date(lastEpoch * 1000).toLocaleString();
+}
+
+/* ---------- Live dashboard (main dash panel, updates during the run) ---------- */
+function btLiveDashboardShow(cfg, startEpoch, endEpoch){
+  document.getElementById('paperAccountBlock').style.display = 'none';
+  document.getElementById('btLiveDashTitle').style.display = 'block';
+  document.getElementById('btLiveDashGrid').style.display = 'grid';
+  document.getElementById('btlDashSub').textContent = `${new Date(startEpoch*1000).toLocaleDateString()} → ${new Date(endEpoch*1000).toLocaleDateString()}`;
+  document.getElementById('btlStart').textContent = '$' + cfg.startingBalance.toFixed(2);
+  if (cfg.profitTarget > 0) {
+    document.getElementById('btLiveTargetVisual').style.display = 'flex';
+    document.getElementById('btlTargetVal').textContent = `$${cfg.startingBalance.toFixed(0)} → $${(cfg.startingBalance+cfg.profitTarget).toFixed(0)}`;
+  }
+  document.getElementById('btlTargetAchievedNote').style.display = 'none';
+}
+function btLiveDashboardHide(){
+  document.getElementById('paperAccountBlock').style.display = '';
+  document.getElementById('btLiveDashTitle').style.display = 'none';
+  document.getElementById('btLiveDashGrid').style.display = 'none';
+  document.getElementById('btLiveTargetVisual').style.display = 'none';
+  document.getElementById('btlTargetAchievedNote').style.display = 'none';
+}
+function btLiveUpdateDashboard(acc, cfg, symbols, lastAnalysis){
+  const equity = acc.equityCurve.length ? acc.equityCurve[acc.equityCurve.length-1].equity : acc.balance;
+  const net = equity - cfg.startingBalance;
+  const peak = acc.peakEquity || cfg.startingBalance;
+  const dd = peak > 0 ? Math.max(0, (peak - equity) / peak * 100) : 0;
+  let maxDD = 0, p = cfg.startingBalance;
+  for (const pt of acc.equityCurve) { p = Math.max(p, pt.equity); maxDD = Math.max(maxDD, p>0?(p-pt.equity)/p*100:0); }
+
+  const trades = acc.closedTrades;
+  const wins = trades.filter(t=>t.pnl>0), losses = trades.filter(t=>t.pnl<=0);
+  const gw = wins.reduce((s,t)=>s+t.pnl,0), gl = Math.abs(losses.reduce((s,t)=>s+t.pnl,0));
+  const pf = gl>0 ? gw/gl : (gw>0?Infinity:0);
+  const winRate = trades.length ? wins.length/trades.length*100 : 0;
+
+  document.getElementById('btlBalance').textContent = '$' + acc.balance.toFixed(2);
+  document.getElementById('btlEquity').textContent = '$' + equity.toFixed(2);
+  const netEl = document.getElementById('btlNet'); netEl.textContent = fmtMoney(net); netEl.className = 'acct-val ' + (net>=0?'g':'r');
+  const retEl = document.getElementById('btlReturn'); const retPct = cfg.startingBalance>0 ? net/cfg.startingBalance*100 : 0; retEl.textContent = (retPct>=0?'+':'')+retPct.toFixed(1)+'%'; retEl.className = 'acct-val ' + (retPct>=0?'g':'r');
+  document.getElementById('btlDD').textContent = dd.toFixed(2) + '%';
+  document.getElementById('btlMaxDD').textContent = maxDD.toFixed(2) + '%' + (acc.haltedByDD ? ' (limit hit)' : '');
+  document.getElementById('btlTrades').textContent = trades.length + (acc.openPositions.length ? ` (+${acc.openPositions.length} open)` : '');
+  document.getElementById('btlWL').textContent = wins.length + ' / ' + losses.length;
+  document.getElementById('btlWinRate').textContent = trades.length ? winRate.toFixed(1)+'%' : '—';
+  document.getElementById('btlPF').textContent = trades.length ? fmtPF(pf) : '—';
+
+  const openPos = acc.openPositions[0];
+  document.getElementById('btlPosition').textContent = openPos ? `${SYM[openPos.sym].label} ${openPos.dir === 'bullish' ? 'LONG' : 'SHORT'} · ${openPos.lots ? openPos.lots.toFixed(2) : toLots(openPos.sym, openPos.units)} lot` : 'Flat';
+  document.getElementById('btlRisk').textContent = cfg.riskPct + '% / trade · 1:' + cfg.leverage;
+
+  const sym = symbols[0];
+  const a = lastAnalysis[sym];
+  document.getElementById('btlBias').textContent = a && a.ready && a.direction ? (SYM[sym].label + ' ' + a.direction.toUpperCase() + ' · score ' + a.score) : (SYM[sym].label + ' — analyzing…');
+  document.getElementById('btlRegime').textContent = a && a.regime ? a.regime.label : '—';
+
+  if (cfg.profitTarget > 0) {
+    const span = cfg.profitTarget;
+    const pct = Math.max(0, Math.min(100, (net / span) * 100));
+    document.getElementById('btlTargetBarFill').style.width = pct + '%';
+    document.getElementById('btlTargetPct').textContent = pct.toFixed(0) + '%';
+    if (acc.targetHitAt) {
+      const note = document.getElementById('btlTargetAchievedNote');
+      note.style.display = 'block';
+      note.textContent = `✓ TARGET ACHIEVED AT: ${new Date(acc.targetHitAt*1000).toLocaleString()} — backtest continues to the selected end date.`;
+    }
+  }
+}
+
+/* ---------- Completion → seamless live-mode transition (spec section 9/10) ---------- */
+async function btTransitionToLive(stats){
+  btLiveSetStatus('done', 'BACKTEST — COMPLETE');
+  document.getElementById('rpPauseResume').style.display = 'none';
+  document.getElementById('rpStop').textContent = '→ Go Live';
+  document.getElementById('rpStop').onclick = () => btFinishTransitionToLive();
+  document.getElementById('rpProgress').textContent = '100%';
+  logFeed('Backtest complete — preserving final chart state, handing off to live monitoring…');
+  // Brief pause so the final backtest chart/state is visible before the
+  // handoff — no reload, no dashboard reset, no chart teardown; the same
+  // #cv canvas and #viewDash panel stay mounted throughout.
+  await new Promise(r => setTimeout(r, 3000));
+  if (document.getElementById('rpStop')) btFinishTransitionToLive();
+}
+function btFinishTransitionToLive(){
+  document.getElementById('replayControls').style.display = 'none';
+  document.getElementById('rpPauseResume').style.display = '';
+  document.getElementById('rpStop').textContent = '■ Stop';
+  document.getElementById('rpStop').onclick = btStopReplay;
+  btLiveDashboardHide();
+  btExitChartView();
+  const anyConnected = SYM.XAU.connected || SYM.BTC.connected;
+  if (!anyConnected) {
+    logFeed('BACKTEST COMPLETE — WAITING FOR LIVE CONNECTION', 'system');
+  } else {
+    logFeed('Backtest complete — live monitoring resumed on the main chart', 'system');
+  }
+  updateAccountUI();
+}
 
 /* ---------- Results rendering ---------- */
 function fmtMoney(v){ return (v>=0?'+':'') + '$' + v.toFixed(2); }
@@ -2983,7 +3364,7 @@ function btShowFullOnChart(sym){
   btEnterChartView(sym);
 }
 
-/* ---------- Visual replay player (scrubs through the precomputed run, live on the main chart) ---------- */
+/* ---------- Review-mode replay player (re-watch a completed run, scrubbable, on the main chart) ---------- */
 let btReplay = { playing:false, idx:0, speed:1, timer:null };
 
 function btPlayReplay(){
@@ -2992,9 +3373,19 @@ function btPlayReplay(){
   btReplay.speed = 1;
   btReplay.playing = true;
   document.getElementById('replayControls').style.display = 'flex';
+  document.getElementById('rpScrub').style.display = '';
   document.getElementById('rpScrub').max = btLastRun.stats.equityCurve.length - 1;
   document.getElementById('rpScrub').value = 0;
-  document.getElementById('rpPause').textContent = '⏸ Pause';
+  document.getElementById('rpSpeed').value = '1';
+  document.getElementById('rpRange').textContent = `${new Date(btLastRun.stats.equityCurve[0].epoch*1000).toLocaleDateString()} → ${new Date(btLastRun.stats.equityCurve[btLastRun.stats.equityCurve.length-1].epoch*1000).toLocaleDateString()}`;
+  const pauseBtn = document.getElementById('rpPauseResume');
+  pauseBtn.style.display = '';
+  pauseBtn.textContent = '⏸ Pause';
+  pauseBtn.onclick = btToggleReplayPause;
+  const stopBtn = document.getElementById('rpStop');
+  stopBtn.textContent = '■ Stop';
+  stopBtn.onclick = btStopReplay;
+  btLiveSetStatus('running', 'REPLAY — PLAYING');
   btChartRevealIdx = 0;
   btEnterChartView();
   btReplayTick();
@@ -3003,7 +3394,7 @@ function btReplayTick(){
   clearTimeout(btReplay.timer);
   if (!btReplay.playing) return;
   const curve = btLastRun.stats.equityCurve;
-  if (btReplay.idx >= curve.length - 1) { btReplay.playing = false; document.getElementById('rpPause').textContent = '↺ Replay'; return; }
+  if (btReplay.idx >= curve.length - 1) { btReplay.playing = false; document.getElementById('rpPauseResume').textContent = '↺ Replay'; btLiveSetStatus('done', 'REPLAY — DONE'); return; }
   btReplay.idx = Math.min(curve.length - 1, btReplay.idx + Math.max(1, Math.round(btReplay.speed)));
   btUpdateReplayFrame();
   const delay = Math.max(8, 40 / btReplay.speed);
@@ -3017,7 +3408,8 @@ function btUpdateReplayFrame(){
   btDrawDrawdownCurve(dd, i+1);
   document.getElementById('rpScrub').value = i;
   const pt = curve[i];
-  document.getElementById('rpStatus').textContent = `${new Date(pt.epoch*1000).toLocaleDateString()} · $${pt.equity.toFixed(0)}`;
+  document.getElementById('rpProgress').textContent = Math.round((i/(curve.length-1))*100) + '%';
+  document.getElementById('rpSimTime').textContent = new Date(pt.epoch*1000).toLocaleString() + ' · $' + pt.equity.toFixed(0);
   btChartRevealIdx = i;
   if (btChartActive) { btUpdateChartLabel(); drawChart(); }
 }
@@ -3025,13 +3417,14 @@ function btToggleReplayPause(){
   if (!btLastRun) return;
   if (btReplay.idx >= btLastRun.stats.equityCurve.length - 1) { btPlayReplay(); return; }
   btReplay.playing = !btReplay.playing;
-  document.getElementById('rpPause').textContent = btReplay.playing ? '⏸ Pause' : '▶ Play';
+  document.getElementById('rpPauseResume').textContent = btReplay.playing ? '⏸ Pause' : '▶ Play';
+  btLiveSetStatus(btReplay.playing ? 'running' : 'paused', btReplay.playing ? 'REPLAY — PLAYING' : 'REPLAY — PAUSED');
   if (btReplay.playing) btReplayTick();
 }
-function btSetReplaySpeed(v){ btReplay.speed = +v; }
+function btSetReplaySpeed(v){ btReplay.speed = +v; if (btLiveCtl) btLiveCtl.speed = +v; }
 function btScrubReplay(v){
   btReplay.playing = false;
-  document.getElementById('rpPause').textContent = '▶ Play';
+  document.getElementById('rpPauseResume').textContent = '▶ Play';
   clearTimeout(btReplay.timer);
   btReplay.idx = +v;
   btUpdateReplayFrame();
