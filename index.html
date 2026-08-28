@@ -904,7 +904,7 @@ let autoReconnect = true;
    Every trade-execution path must go through canTradeSymbol().
    ============================================================ */
 let selectedSymbol = (function(){
-  try { const v = localStorage.getItem('apex_selectedSymbol'); if (v === 'XAU' || v === 'BTC' || v === 'BOTH') return v; } catch(_){}
+  try { const v = localStorage.getItem('smc_selectedSymbol'); if (v === 'XAU' || v === 'BTC' || v === 'BOTH') return v; } catch(_){}
   return 'BOTH';
 })();
 
@@ -1513,7 +1513,7 @@ function setSymbolMode(mode){
   if (mode !== 'XAU' && mode !== 'BTC' && mode !== 'BOTH') return;
   if (btChartActive) btExitChartView(); // leaving replay view when the trading symbol changes
   selectedSymbol = mode;
-  try { localStorage.setItem('apex_selectedSymbol', mode); } catch(_){}
+  try { localStorage.setItem('smc_selectedSymbol', mode); } catch(_){}
   applySymbolModeUI();
   logFeed(`Trading symbol set to ${mode === 'BOTH' ? 'XAUUSD + BTCUSD (BOTH)' : SYM[mode].label} — ${mode === 'BOTH' ? 'both engines active' : SYM[mode === 'XAU' ? 'BTC' : 'XAU'].label + ' analysis, entries and alerts are now suspended'}`, 'system');
 }
@@ -1867,190 +1867,38 @@ function computeRegime(sym, store){
   return { label, dir, atrPct, r2:lr.r2 };
 }
 
-// ---------- Setup Quality Score ----------
-// Combines the four engines above into a 0-100 confluence score. This is
-// informational only — it does not size or place anything.
-function computeScore(sym, store){
-  store = store || SYM;
-  const structure = computeStructure(sym, store);
-  const bias = computeBias(sym, store);
-  const regime = computeRegime(sym, store);
-  const sweep = computeSweep(sym, store);
-  const s = store[sym];
-
-  if (!structure || !bias || !regime) {
-    return { ready:false, structure, bias, regime, sweep, score:0, direction:null, breakdown:[] };
-  }
-
-  const direction = bias.dir !== 'neutral' ? bias.dir : structure.trend !== 'ranging' ? structure.trend : null;
-  const breakdown = [];
-  let score = 0;
-
-  // 1) HTF bias aligned with M5 structure
-  const aligned = bias.dir !== 'neutral' && structure.trend !== 'ranging' && bias.dir === structure.trend;
-  const partial = (bias.dir !== 'neutral' && structure.trend === 'ranging') || (bias.dir === 'neutral' && structure.trend !== 'ranging');
-  const pts1 = aligned ? 30 : partial ? 10 : 0;
-  score += pts1;
-  breakdown.push({ ok: pts1 > 0, txt: `HTF bias × M5 structure alignment (${bias.dir} / ${structure.trend})`, pts: pts1, max: 30 });
-
-  // 2) Regime favorable + directionally consistent
-  let pts2 = 0;
-  if (regime.label === 'trending' && direction && regime.dir === direction) pts2 = 25;
-  else if (regime.label === 'trending') pts2 = 12;
-  else if (regime.label === 'ranging') pts2 = 10;
-  else if (regime.label === 'quiet') pts2 = 5;
-  score += pts2;
-  breakdown.push({ ok: pts2 >= 12, txt: `Regime is favorable (${regime.label}, ${regime.atrPct.toFixed(3)}% ATR)`, pts: pts2, max: 25 });
-
-  // 3) Liquidity sweep in the direction of bias
-  const pts3 = (sweep && direction && sweep.type === direction) ? 25 : 0;
-  score += pts3;
-  breakdown.push({ ok: pts3 > 0, txt: sweep ? `Liquidity sweep detected (${sweep.type})` : 'No liquidity sweep in range', pts: pts3, max: 25 });
-
-  // 4) M1 momentum candle confirms direction
-  const m1 = s.candles[60];
-  let pts4 = 0;
-  if (m1 && m1.length >= 2 && direction) {
-    const last = m1[m1.length - 2]; // last fully closed M1 bar
-    const bullCandle = last.close > last.open;
-    if ((direction === 'bullish' && bullCandle) || (direction === 'bearish' && !bullCandle)) pts4 = 10;
-  }
-  score += pts4;
-  breakdown.push({ ok: pts4 > 0, txt: 'Last closed M1 candle confirms direction', pts: pts4, max: 10 });
-
-  // 5) Spread health (tight enough to trade). Historical bid/ask isn't
-  // available from the free Deriv/Binance history endpoints used by the
-  // backtest engine, so in backtest mode this criterion is honestly
-  // reported as "assumed healthy" rather than fabricated — it always
-  // passes there. In live mode it checks the real streamed spread.
-  const spreadOk = store.__isBacktest ? true : (s.bid != null && s.ask != null && (s.ask - s.bid) <= (sym === 'XAU' ? 0.60 : s.price * 0.0006));
-  const pts5 = spreadOk ? 10 : 0;
-  score += pts5;
-  breakdown.push({ ok: spreadOk, txt: store.__isBacktest ? 'Spread assumed healthy (no historical bid/ask in backtest)' : 'Spread within acceptable range', pts: pts5, max: 10 });
-
-  return { ready:true, structure, bias, regime, sweep, score, direction, breakdown };
-}
-
-function scoreGrade(score){
-  if (score >= 80) return 'a';
-  if (score >= 65) return 'b';
-  if (score >= 50) return 'c';
-  return 'd';
-}
-function scoreGradeLabel(score){
-  if (score >= 80) return 'Grade A — strong confluence';
-  if (score >= 65) return 'Grade B — workable confluence';
-  if (score >= 50) return 'Grade C — weak / partial';
-  return 'Grade D — no real setup';
-}
-
-function fmtDir(d){
-  if (d === 'bullish') return 'Bullish';
-  if (d === 'bearish') return 'Bearish';
-  if (d === 'ranging') return 'Ranging';
-  if (d === 'neutral') return 'Neutral';
-  return '—';
-}
-function dirClass(d){
-  if (d === 'bullish') return 'trend-bull';
-  if (d === 'bearish') return 'trend-bear';
-  return 'trend-flat';
-}
-function regimeClass(label){
-  if (label === 'trending') return 'regime-trend';
-  if (label === 'ranging') return 'regime-range';
-  if (label === 'volatile') return 'regime-vol';
-  if (label === 'quiet') return 'regime-quiet';
-  return '';
-}
-
-function runAnalysis(sym){
-  const result = computeScore(sym);
-  const prevSignalTxt = ANALYSIS[sym] ? ANALYSIS[sym].lastSignalTxt : null;
-  ANALYSIS[sym] = result;
-
-  if (!result.ready) {
-    if (isSymbolVisible(sym)) updateModeStripRegime(null);
-    return;
-  }
-
-  const newSig = (result.score >= 65 && result.direction)
-    ? `${fmtDir(result.direction)} confluence forming (${result.score}/100)`
-    : 'Monitoring — no confluence yet';
-  if (newSig !== prevSignalTxt) {
-    if (result.score >= 65 && result.direction) {
-      logFeed(`[${SYM[sym].label}] ${newSig} — informational only, no trade placed`);
-    }
-  }
-  ANALYSIS[sym].lastSignalTxt = newSig;
-
+// ---------- SMC / ICT Analysis Adapter ----------
+// The dashboard analysis is derived exclusively from the SMC/ICT setup engine.
+// It does not calculate or vote with any legacy strategy score.
+function runSMCAnalysis(sym){
+  const state={lastSignalBySymbol:{}};
+  const setup=findSMCSetup(sym, null, state);
+  const result = setup ? {
+    ready:true,
+    direction:setup.direction,
+    score:setup.score,
+    regime:{label:'smc'},
+    structure:{swings:[]},
+    sweep:setup.setupType && setup.setupType.includes('SWEEP') ? {direction:setup.direction} : null,
+    breakdown:[
+      {ok:true,txt:'SMC market structure aligned',pts:25,max:25},
+      {ok:setup.setupType.includes('SWEEP'),txt:'Liquidity narrative',pts:setup.setupType.includes('SWEEP')?20:10,max:20},
+      {ok:!!setup.reaction,txt:'Market structure shift / confirmation',pts:25,max:25},
+      {ok:setup.setupType.includes('FVG') || setup.setupType.includes('OB'),txt:'FVG / Order Block confluence',pts:(setup.setupType.includes('FVG')||setup.setupType.includes('OB'))?20:10,max:20},
+      {ok:true,txt:'Structure-based risk placement',pts:10,max:10}
+    ],
+    lastSignalTxt:`SMC/ICT ${setup.direction} — ${setup.setupType}`
+  } : {
+    ready:false, direction:null, score:0, regime:{label:'smc'}, structure:{swings:[]}, sweep:null,
+    breakdown:[], lastSignalTxt:'Monitoring SMC/ICT structure, liquidity and displacement'
+  };
+  ANALYSIS[sym]=result;
   if (isSymbolVisible(sym)) updateModeStripRegime(result);
-  if (document.getElementById('drawerSetup').classList.contains('open') && setupDrawerSymbol === sym) {
-    renderSetupDrawer();
-  }
+  if (setupDrawerSymbol===sym) renderSetupDrawer();
+  renderSafetyGate(sym);
+  return result;
 }
-
-function updateModeStripRegime(result){
-  const el = document.getElementById('regimeLabel');
-  if (!el) return; // regime pill was removed from the UI
-  if (!result || !result.ready) { el.innerHTML = 'Regime: <b>—</b>'; return; }
-  el.innerHTML = `Regime: <b class="${regimeClass(result.regime.label)}">${result.regime.label[0].toUpperCase() + result.regime.label.slice(1)}</b>`;
-}
-
-function setSetupDrawerSymbol(sym){
-  setupDrawerSymbol = sym;
-  document.getElementById('setupTabXAU').classList.toggle('on', sym === 'XAU');
-  document.getElementById('setupTabBTC').classList.toggle('on', sym === 'BTC');
-  renderSetupDrawer();
-}
-
-function renderSetupDrawer(){
-  document.getElementById('setupTabXAU').classList.toggle('on', setupDrawerSymbol === 'XAU');
-  document.getElementById('setupTabBTC').classList.toggle('on', setupDrawerSymbol === 'BTC');
-  const result = ANALYSIS[setupDrawerSymbol];
-  const ring = document.getElementById('scoreRing');
-  const val = document.getElementById('scoreVal');
-  const grade = document.getElementById('scoreGrade');
-  const sig = document.getElementById('scoreSignalTxt');
-  const list = document.getElementById('confluenceList');
-
-  if (!result || !result.ready) {
-    ring.className = 'score-ring';
-    val.textContent = '—';
-    grade.textContent = 'No score yet';
-    sig.textContent = `Waiting for enough ${SYM[setupDrawerSymbol].label} candle history (needs ~55 M15 bars + 30 M5 + 40 M1)…`;
-    list.innerHTML = '';
-    document.getElementById('detBias').textContent = '—';
-    document.getElementById('detStructure').textContent = '—';
-    document.getElementById('detRegime').textContent = '—';
-    document.getElementById('detSweep').textContent = '—';
-    return;
-  }
-
-  const g = scoreGrade(result.score);
-  ring.className = 'score-ring ' + g;
-  val.textContent = result.score;
-  grade.textContent = scoreGradeLabel(result.score);
-  sig.textContent = result.lastSignalTxt || 'Monitoring — no confluence yet';
-
-  list.innerHTML = result.breakdown.map(b => `
-    <div class="cond">
-      <span class="ci ${b.ok ? 'ok' : 'no'}">${b.ok ? '✓' : '·'}</span>
-      <span class="cond-txt">${b.txt}</span>
-      <span class="cond-pts">${b.pts}/${b.max}</span>
-    </div>
-  `).join('');
-
-  document.getElementById('detBias').textContent = `${fmtDir(result.bias.dir)} (EMA20 ${result.bias.ema20.toFixed(2)} / EMA50 ${result.bias.ema50.toFixed(2)})`;
-  document.getElementById('detBias').className = 'conn-status';
-  document.getElementById('detStructure').textContent = fmtDir(result.structure.trend) + (result.structure.lastBOS ? ` · BOS ${result.structure.lastBOS.type}` : '');
-  document.getElementById('detRegime').textContent = `${result.regime.label[0].toUpperCase()+result.regime.label.slice(1)} (R² ${result.regime.r2.toFixed(2)}, ATR ${result.regime.atrPct.toFixed(3)}%)`;
-  document.getElementById('detSweep').textContent = result.sweep ? `${result.sweep.type} sweep @ ${result.sweep.price.toFixed(2)}` : 'None in range';
-}
-
-// Re-run analysis periodically — cheap enough (pure math over cached
-// candle arrays) to run every few seconds without taxing the UI thread.
-setInterval(() => { if (canTradeSymbol('XAU')) runAnalysis('XAU'); if (canTradeSymbol('BTC')) runAnalysis('BTC'); }, 4000);
+setInterval(() => { if (canTradeSymbol('XAU')) runSMCAnalysis('XAU'); if (canTradeSymbol('BTC')) runSMCAnalysis('BTC'); }, 4000);
 
 /* ============================================================
    RISK ENGINE + SL/TP TRADE MANAGEMENT + LIVE SAFETY CHECKLIST
@@ -2304,7 +2152,7 @@ function clearTradeHistory(){
 // ---------- Risk engine helpers ----------
 function isSpreadHealthy(sym, store){
   store = store || SYM;
-  if (store.__isBacktest) return true; // no historical bid/ask available — see computeScore note
+  if (store.__isBacktest) return true; // no historical bid/ask available — historical analysis note
   const s = store[sym];
   if (s.bid == null || s.ask == null) return false;
   const spread = s.ask - s.bid;
@@ -2325,253 +2173,72 @@ function safetyGate(sym){
   const analysis = ANALYSIS[sym];
   const equity = computeEquity();
   const checks = [];
-
   checks.push({ label: 'Feed connected', ok: !!s.connected });
   checks.push({ label: 'Spread within acceptable range', ok: isSpreadHealthy(sym) });
-  checks.push({ label: 'Daily loss limit not breached', ok: equity >= ACCOUNT.dailyStartBalance * (1 - ACCOUNT.cfg.maxDailyLossPct/100) });
+  const dailyLimit=Number(ACCOUNT.cfg.maxDailyLossPct)||0;
+  const dailyOk=dailyLimit<=0 || equity >= ACCOUNT.dailyStartBalance*(1-dailyLimit/100);
+  checks.push({ label: dailyLimit>0 ? 'User daily loss limit not breached' : 'Daily loss limit disabled', ok: dailyOk });
   checks.push({ label: 'No existing open position on symbol', ok: !ACCOUNT.openPositions.some(p => p.sym === sym) });
-  checks.push({ label: 'Regime is not volatile/choppy', ok: !!(analysis && analysis.ready && analysis.regime.label !== 'volatile') });
+  checks.push({ label: 'SMC/ICT analysis available', ok: !!(analysis && analysis.ready && analysis.direction) });
   checks.push({ label: 'Not in post-loss-streak cooldown', ok: Date.now() >= ACCOUNT.cooldownUntil });
-  checks.push({ label: 'Setup Quality Score ≥ 65 with a clear direction', ok: !!(analysis && analysis.ready && analysis.score >= 65 && analysis.direction) });
-  apexSyncState();
-  checks.push({ label: 'APEX max open trades not reached', ok: ACCOUNT.openPositions.length < APEX_CONFIG.risk.maxOpenTrades });
-  checks.push({ label: 'APEX max drawdown not breached', ok: apexCalculateCurrentDrawdown() < APEX_CONFIG.risk.maxDrawdown });
-  checks.push({ label: 'APEX trading session active', ok: apexGetSessionStatus().allowed });
-
-  const passed = checks.every(c => c.ok);
-  return { passed, checks };
+  return { passed: checks.every(c=>c.ok), checks };
 }
 
-/* ============================================================
-   APEX STRATEGY ENGINE (v3)
-   ------------------------------------------------------------
-   Multi-timeframe setup detector (H1 bias -> M15 impulse ->
-   M5 pullback + rejection), candle validation, session
-   filtering, volatility-state filtering, one-signal-per-bar
-   dedup, and risk sizing — ported in full from the supplied
-   APEX module. Everything through riskCheck()/apexCalculate-
-   CurrentDrawdown() below is a direct port of what was
-   provided; nothing past that point (execution/management) was
-   supplied for this version, so — as with v1 — entries still
-   flow through the terminal's own ACCOUNT pipeline
-   (maybeEnterTrade/managePositions) rather than a duplicated
-   execution engine. See the note above managePositions() for
-   what that means for TP1/TP2/trailing.
-   ============================================================ */
-const APEX_CONFIG = {
-  symbols: {
-    XAUUSD: { enabled: true, pipSize: 0.01, minImpulseATR: 1.2, pullbackMin: 0.382, pullbackMax: 0.618, maxSpreadPips: 35, minATR: 0.5, maxATR: 3 },
-    BTCUSD: { enabled: true, pipSize: 0.01, minImpulseATR: 1.2, pullbackMin: 0.382, pullbackMax: 0.618, maxSpreadPips: 250, minATR: 0.5, maxATR: 3 }
-  },
-  timeframes: { bias: "H1", setup: "M15", entry: "M5" },
-  strategy: { enabled: true, minimumSetupScore: 58, useTrendFilter: true, useImpulseFilter: true, usePullbackZone: true, useRejectionConfirmation: true, useVolumeFilter: false, useVolatilityFilter: true, allowContinuation: true, allowReversal: false, requireClosedCandle: true, oneSignalPerBar: true, minimumStructureStrength: 40, minimumImpulseStrength: 0.65 },
-  risk: { enabled: true, riskPerTrade: 0.25, maxRiskPerTrade: 1, dailyRiskLimit: 7.5, maxDrawdown: 10, maxOpenTrades: 2, maxTradesPerDay: 40, maxConsecutiveLosses: 5, cooldownMinutes: 10, lossRiskReductionEnabled: true, lossRiskMultiplier: 0.75, maxSymbolExposure: 1, maxCorrelatedExposure: 1, reserveMarginPercent: 15, rejectIfMinimumLotExceedsRisk: true },
-  growth: { enabled: true, compoundFromEquity: true, aggressiveGrowth: false, aggressiveRiskMultiplier: 1, profitProtectionEnabled: true, profitProtectionDrawdown: 4, profitLockThreshold: 5, profitLockRiskMultiplier: 0.5 },
-  lots: { minimumLotSize: 0.01, maximumLotSize: 100, lotStep: 0.01 },
-  leverage: { value: 100 },
-  stopLoss: { method: "STRUCTURE", structureBufferATR: 0.2, minimumATR: 0.5, maximumATR: 3, minimumDistancePips: 1 },
-  takeProfit: { enabled: true, tp1RR: 1.25, tp1ClosePercent: 30, tp2RR: 2.25, tp2ClosePercent: 40, runnerPercent: 30, breakEvenAtR: 1.1, breakEvenOffsetATR: 0.05, trailingEnabled: true, trailingStartR: 1.75, trailingATRMultiplier: 1.5, minimumFinalRR: 2 },
-  filters: { maxSpread: null, minimumRR: 2, avoidExtremeVolatility: true, extremeVolatilityATRMultiplier: 3, avoidChasing: true, maximumExtensionATR: 1.75, minimumCandleBodyRatio: 0.35, maximumEntryDistanceATR: 0.35, requireFreshSignal: true },
-  sessions: { enabled: true, london: true, newYork: true, asia: false, start: "07:00", end: "21:00", avoidSessionMinutesBeforeClose: 15 },
-  execution: { slippagePips: 0, maxSlippagePips: 5, rejectDuplicateSignals: true, rejectOppositePositions: true }
+// ============================================================
+// SMC / ICT STRATEGY INFRASTRUCTURE
+// ============================================================
+// SMC/ICT is the only signal-generation strategy in this terminal.
+const SMC_CONFIG = {
+  strategy:{ enabled:true, oneSignalPerBar:true, minimumSetupScore:55 },
+  lots:{ lotStep:0.01 },
+  execution:{ reserveMarginPercent:0 }
 };
+const SMC_STATE={ lastSignalBySymbol:{}, equity:0, accountBalance:0 };
 
-// APEX's own bookkeeping mirror. It does not hold the account of record —
-// ACCOUNT (existing paper-trading store above) is — apexSyncState() below
-// refreshes these fields from ACCOUNT immediately before every setup/risk
-// evaluation, so riskCheck()/calculateRiskAmount() see live numbers without
-// a second, divergent ledger.
-const APEX_STATE = {
-  accountBalance: 0, equity: 0, equityHighWaterMark: 0, dailyPnL: 0, dailyRiskUsed: 0,
-  openTrades: [], closedTrades: [], tradesToday: 0, consecutiveWins: 0, consecutiveLosses: 0,
-  lastLossTime: 0, lastTradeTime: 0, lastSignalBySymbol: {}, currentTradingDay: null,
-  symbols: {}, running: false
-};
-
-function apexNormalizeCandle(candle) {
-  if (!candle) return null;
-  const open = Number(candle.open), high = Number(candle.high), low = Number(candle.low), close = Number(candle.close);
-  if (![open, high, low, close].every(Number.isFinite) || high < Math.max(open, close) || low > Math.min(open, close)) return null;
-  return { ...candle, open, high, low, close, volume: Number.isFinite(Number(candle.volume)) ? Number(candle.volume) : null };
+function smcNormalizeCandle(c){
+  if(!c) return null;
+  const open=Number(c.open),high=Number(c.high),low=Number(c.low),close=Number(c.close);
+  if(![open,high,low,close].every(Number.isFinite)||high<Math.max(open,close)||low>Math.min(open,close)) return null;
+  return {...c,open,high,low,close};
 }
-function apexGetValidCandles(candles) {
-  return Array.isArray(candles) ? candles.map(apexNormalizeCandle).filter(Boolean) : [];
-}
-function apexGetCandleTimestamp(candle) {
-  return candle?.epoch ?? candle?.timestamp ?? candle?.time ?? null;
-}
-function apexGetLatestClosedCandle(candles) {
-  const valid = apexGetValidCandles(candles);
-  return valid.length ? valid.at(-1) : null;
-}
-
-function apexDetectSwingPoints(candles, lookback = 3) {
-  const highs = [], lows = [];
-  for (let i = lookback; i < candles.length - lookback; i++) {
-    const candle = candles[i];
-    let isHigh = true, isLow = true;
-    for (let j = 1; j <= lookback; j++) {
-      if (candle.high <= candles[i - j].high || candle.high <= candles[i + j].high) isHigh = false;
-      if (candle.low >= candles[i - j].low || candle.low >= candles[i + j].low) isLow = false;
-    }
-    if (isHigh) highs.push({ index: i, price: candle.high });
-    if (isLow) lows.push({ index: i, price: candle.low });
+function smcGetValidCandles(candles){return Array.isArray(candles)?candles.map(smcNormalizeCandle).filter(Boolean):[]}
+function smcGetCandleTimestamp(c){return c?.epoch??c?.timestamp??c?.time??null}
+function smcATR(candles,period=14){
+  const v=smcGetValidCandles(candles); if(v.length<=period) return null;
+  let total=0;
+  for(let i=v.length-period;i<v.length;i++){
+    const prev=v[i-1]?.close??v[i].close;
+    total+=Math.max(v[i].high-v[i].low,Math.abs(v[i].high-prev),Math.abs(v[i].low-prev));
   }
-  return { highs, lows };
+  const value=total/period; return Number.isFinite(value)&&value>0?value:null;
+}
+function smcVolatility(candles){
+  const a=smcATR(candles),v=smcGetValidCandles(candles).slice(-20);
+  if(!a||!v.length)return {atr:a,state:'UNKNOWN'};
+  const avg=v.reduce((t,c)=>t+c.high-c.low,0)/v.length;
+  const ratio=avg>0?a/avg:1;
+  return {atr:a,ratio,state:ratio>=2.2?'HIGH':ratio<=0.6?'LOW':'NORMAL'};
+}
+function smcSyncState(){ SMC_STATE.equity=computeEquity(); SMC_STATE.accountBalance=ACCOUNT.balance; }
+function smcCalculatePositionSize(sym,entry,stop,equity){
+  const riskPct=Math.max(0,Number(ACCOUNT.cfg.riskPct)||0);
+  const riskAmount=equity*riskPct/100, distance=Math.abs(entry-stop);
+  const value=sym==='XAU'?100:1;
+  if(!(riskAmount>0&&distance>0&&value>0)) return 0;
+  let lots=riskAmount/(distance*value);
+  const min=Math.max(0.000001,Number(ACCOUNT.cfg.minLot)||0.01), max=Math.max(min,Number(ACCOUNT.cfg.maxLot)||min), step=SMC_CONFIG.lots.lotStep;
+  lots=Math.floor(Math.min(lots,max)/step)*step;
+  return lots>=min?Number(lots.toFixed(8)):0;
+}
+function smcRiskCheck(sym,setup){
+  if(!setup)return {allowed:false,reason:'No SMC/ICT setup.'};
+  const dailyLimit=Number(ACCOUNT.cfg.maxDailyLossPct)||0;
+  if(dailyLimit>0&&computeEquity()<ACCOUNT.dailyStartBalance*(1-dailyLimit/100)) return {allowed:false,reason:'User daily loss limit reached.'};
+  if(ACCOUNT.openPositions.some(p=>p.sym===sym)) return {allowed:false,reason:'Existing position on symbol.'};
+  if(Date.now()<ACCOUNT.cooldownUntil) return {allowed:false,reason:'Post-loss cooldown is active.'};
+  return {allowed:true,reason:'SMC/ICT and user-configured risk checks passed.'};
 }
 
-function apexCalculateStructureStrength(candles, direction, highs = [], lows = []) {
-  const recent = candles.slice(-20);
-  if (recent.length < 10) return 0;
-  const directional = recent.filter(c => direction === "BUY" ? c.close > c.open : c.close < c.open).length;
-  const [latestHigh, previousHigh] = highs.slice(-2);
-  const [latestLow, previousLow] = lows.slice(-2);
-  let quality = 0;
-  if (direction === "BUY") {
-    if (latestHigh?.price > previousHigh?.price) quality += 25;
-    if (latestLow?.price > previousLow?.price) quality += 25;
-  } else {
-    if (latestHigh?.price < previousHigh?.price) quality += 25;
-    if (latestLow?.price < previousLow?.price) quality += 25;
-  }
-  return Math.min(100, directional / recent.length * 50 + quality);
-}
-
-function apexDetectMarketStructure(candles) {
-  const valid = apexGetValidCandles(candles);
-  if (valid.length < 30) return { direction: "NEUTRAL", strength: 0, highs: [], lows: [] };
-  const { highs, lows } = apexDetectSwingPoints(valid, 3);
-  if (highs.length < 2 || lows.length < 2) return { direction: "NEUTRAL", strength: 0, highs, lows };
-  const [lastHigh, previousHigh] = highs.slice(-2);
-  const [lastLow, previousLow] = lows.slice(-2);
-  const bullish = lastHigh.price > previousHigh.price && lastLow.price > previousLow.price;
-  const bearish = lastHigh.price < previousHigh.price && lastLow.price < previousLow.price;
-  if (bullish) return { direction: "BULLISH", strength: apexCalculateStructureStrength(valid, "BUY", highs, lows), highs, lows };
-  if (bearish) return { direction: "BEARISH", strength: apexCalculateStructureStrength(valid, "SELL", highs, lows), highs, lows };
-  return { direction: "NEUTRAL", strength: 0, highs, lows };
-}
-
-function apexCalculateTrueRange(candle, previousCandle) {
-  if (!candle) return 0;
-  const previousClose = previousCandle?.close ?? candle.close;
-  return Math.max(candle.high - candle.low, Math.abs(candle.high - previousClose), Math.abs(candle.low - previousClose));
-}
-function apexCalculateATR(candles, period = 14) {
-  const valid = apexGetValidCandles(candles);
-  if (valid.length <= period) return null;
-  const ranges = valid.slice(-period).map((c, i) => apexCalculateTrueRange(c, valid[valid.length - period + i - 1]));
-  const a = ranges.reduce((x, y) => x + y, 0) / ranges.length;
-  return Number.isFinite(a) && a > 0 ? a : null;
-}
-function apexCalculateAverageRange(candles, period = 20) {
-  const valid = apexGetValidCandles(candles).slice(-period);
-  if (!valid.length) return null;
-  const average = valid.reduce((total, c) => total + c.high - c.low, 0) / valid.length;
-  return Number.isFinite(average) && average > 0 ? average : null;
-}
-function apexCalculateVolatilityState(candles) {
-  const a = apexCalculateATR(candles), averageRange = apexCalculateAverageRange(candles);
-  if (!a || !averageRange) return { atr: null, ratio: null, state: "UNKNOWN" };
-  const ratio = a / averageRange;
-  return { atr: a, ratio, state: ratio >= APEX_CONFIG.filters.extremeVolatilityATRMultiplier ? "EXTREME" : ratio >= 1.5 ? "HIGH" : ratio <= 0.7 ? "LOW" : "NORMAL" };
-}
-
-function apexDetectImpulse(candles, direction, config) {
-  const valid = apexGetValidCandles(candles), a = apexCalculateATR(valid);
-  if (!a || valid.length < 6) return null;
-  const recent = valid.slice(-6), startPrice = recent[0].open, endPrice = recent.at(-1).close;
-  const movement = Math.abs(endPrice - startPrice), strength = movement / a;
-  const directional = recent.filter(c => direction === "BUY" ? c.close > c.open : c.close < c.open).length;
-  const bodyRatio = recent.reduce((t, c) => t + (c.high > c.low ? Math.abs(c.close - c.open) / (c.high - c.low) : 0), 0) / recent.length;
-  if (strength < Number(config.minImpulseATR) || (direction === "BUY" ? endPrice <= startPrice : endPrice >= startPrice) || directional < 3 || bodyRatio < APEX_CONFIG.filters.minimumCandleBodyRatio) return null;
-  return { direction, startPrice, endPrice, range: movement, atr: a, strength, directionalCandles: directional, averageBodyRatio: bodyRatio, high: Math.max(...recent.map(c => c.high)), low: Math.min(...recent.map(c => c.low)) };
-}
-
-function apexCalculatePullbackZone(impulse, config) {
-  if (!impulse || impulse.range <= 0) return null;
-  const min = Number(config.pullbackMin), max = Number(config.pullbackMax), range = impulse.high - impulse.low;
-  if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0 || max <= min) return null;
-  return impulse.direction === "BUY"
-    ? { high: impulse.high - range * min, low: impulse.high - range * max }
-    : { low: impulse.low + range * min, high: impulse.low + range * max };
-}
-function apexPriceInsideZone(price, zone, tolerance = 0) {
-  return Boolean(zone && Number.isFinite(price) && price >= zone.low - tolerance && price <= zone.high + tolerance);
-}
-
-function apexDetectRejection(candles, direction) {
-  const valid = apexGetValidCandles(candles);
-  if (valid.length < 3) return null;
-  const candle = valid.at(-1), previous = valid.at(-2);
-  const body = Math.abs(candle.close - candle.open), range = candle.high - candle.low;
-  if (range <= 0) return null;
-  const upper = candle.high - Math.max(candle.open, candle.close);
-  const lower = Math.min(candle.open, candle.close) - candle.low;
-  const bodyRatio = body / range, closeLocation = (candle.close - candle.low) / range;
-  if (bodyRatio < APEX_CONFIG.filters.minimumCandleBodyRatio) return null;
-  const validRejection = direction === "BUY"
-    ? lower >= body * 1.1 && candle.close > candle.open && closeLocation >= 0.6 && candle.close >= previous.close
-    : upper >= body * 1.1 && candle.close < candle.open && closeLocation <= 0.4 && candle.close <= previous.close;
-  return validRejection ? { direction, candle, bodyRatio, wickRatio: (direction === "BUY" ? lower : upper) / range } : null;
-}
-
-function apexCalculateSetupScore(data) {
-  let score = 0;
-  if (data.bias === data.direction) score += 25;
-  if (data.structureStrength >= APEX_CONFIG.strategy.minimumStructureStrength) score += 20;
-  if (data.impulseStrength >= APEX_CONFIG.strategy.minimumImpulseStrength) score += 20;
-  if (data.inPullback) score += 15;
-  if (data.rejection) score += 15;
-  if (data.rr >= APEX_CONFIG.filters.minimumRR) score += 5;
-  if (data.volatilityState === "NORMAL") score += 5;
-  if (data.volatilityState === "HIGH") score -= 5;
-  if (data.entryQuality === "EXTENDED") score -= 15;
-  return Math.max(0, Math.min(100, score));
-}
-
-function apexParseTimeToMinutes(value) {
-  if (typeof value !== "string") return null;
-  const [hours, minutes] = value.split(":").map(Number);
-  return Number.isInteger(hours) && Number.isInteger(minutes) && hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 ? hours * 60 + minutes : null;
-}
-function apexGetSessionStatus(timestamp = Date.now()) {
-  if (!APEX_CONFIG.sessions.enabled) return { allowed: true, session: "ALL_DAY" };
-  const date = new Date(timestamp), minutes = date.getUTCHours() * 60 + date.getUTCMinutes();
-  const start = apexParseTimeToMinutes(APEX_CONFIG.sessions.start), end = apexParseTimeToMinutes(APEX_CONFIG.sessions.end);
-  if (start === null || end === null) return { allowed: false, session: "INVALID_SESSION" };
-  const inWindow = start <= end ? minutes >= start && minutes <= end : minutes >= start || minutes <= end;
-  if (!inWindow) return { allowed: false, session: "OUTSIDE_SESSION" };
-  const minutesToEnd = start <= end ? end - minutes : minutes <= end ? end - minutes : 1440 - minutes + end;
-  return minutesToEnd <= Number(APEX_CONFIG.sessions.avoidSessionMinutesBeforeClose) ? { allowed: false, session: "SESSION_CLOSING" } : { allowed: true, session: "ACTIVE" };
-}
-
-function apexGetCurrentTradingDay(timestamp = Date.now()) {
-  const date = new Date(timestamp);
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
-}
-function apexResetDailyStateIfNeeded(timestamp = Date.now()) {
-  const day = apexGetCurrentTradingDay(timestamp);
-  if (APEX_STATE.currentTradingDay === day) return;
-  APEX_STATE.currentTradingDay = day;
-  APEX_STATE.dailyPnL = APEX_STATE.dailyRiskUsed = APEX_STATE.tradesToday = 0;
-}
-
-// The live feeds here only stream M1/M5/M15 — there's no H1 feed — so
-// APEX's H1 bias timeframe is synthesized by grouping every 4 M15 bars
-// into one H1 bar, rather than fetched directly.
-function apexBuildH1(m15) {
-  if (!m15 || m15.length < 8) return [];
-  const out = [];
-  for (let i = 0; i + 4 <= m15.length; i += 4) {
-    const chunk = m15.slice(i, i + 4);
-    out.push({ epoch: chunk[0].epoch, open: chunk[0].open, close: chunk[chunk.length - 1].close, high: Math.max(...chunk.map(c => c.high)), low: Math.min(...chunk.map(c => c.low)) });
-  }
-  return out;
-}
-
-// Runs the full APEX H1->M15->M5 setup detector for `sym` ('XAU' | 'BTC')
-// against the terminal's live candle stores. `symbol` inside APEX_CONFIG is
-// keyed by SYM[sym].label ('XAUUSD' / 'BTCUSD').
 // ============================================================
 // SMC / ICT SETUP ENGINE
 // ------------------------------------------------------------
@@ -2668,23 +2335,21 @@ function smcMicroMSS(candles, direction) {
   return last.close < level ? { level, type:'MSS_DOWN' } : null;
 }
 
-function findApexSetup(sym, storeOverride = null, stateOverride = null) {
-  if (!APEX_CONFIG.strategy.enabled) return null;
+function findSMCSetup(sym, storeOverride = null, stateOverride = null) {
+  if (!SMC_CONFIG.strategy.enabled) return null;
   const symbol = SYM[sym].label;
-  const config = APEX_CONFIG.symbols[symbol];
-  if (!config?.enabled) return null;
   const store = storeOverride || SYM;
-  const state = stateOverride || APEX_STATE;
+  const state = stateOverride || SMC_STATE;
   const m15Raw=store[sym].candles[900], m5Raw=store[sym].candles[300], m1Raw=store[sym].candles[60];
   if (!m15Raw || !m5Raw || !m1Raw) return null;
-  const m15=apexGetValidCandles(m15Raw.slice(0,-1));
-  const m5=apexGetValidCandles(m5Raw.slice(0,-1));
-  const m1=apexGetValidCandles(m1Raw.slice(0,-1));
+  const m15=smcGetValidCandles(m15Raw.slice(0,-1));
+  const m5=smcGetValidCandles(m5Raw.slice(0,-1));
+  const m1=smcGetValidCandles(m1Raw.slice(0,-1));
   if (m15.length<40 || m5.length<28 || m1.length<12) return null;
 
-  const latest=m1.at(-1), timestamp=apexGetCandleTimestamp(latest);
+  const latest=m1.at(-1), timestamp=smcGetCandleTimestamp(latest);
   state.lastSignalBySymbol=state.lastSignalBySymbol||{};
-  if (APEX_CONFIG.strategy.oneSignalPerBar && timestamp!==null && state.lastSignalBySymbol[symbol]===timestamp) return null;
+  if (SMC_CONFIG.strategy.oneSignalPerBar && timestamp!==null && state.lastSignalBySymbol[symbol]===timestamp) return null;
 
   const htf=smcStructureBias(m15), itf=smcStructureBias(m5);
   const sweep=smcLiquiditySweep(m5, 18);
@@ -2693,7 +2358,7 @@ function findApexSetup(sym, storeOverride = null, stateOverride = null) {
   if (!direction) return null;
   if (sweep && sweep.direction!==direction) return null;
 
-  const atr5=apexCalculateATR(m5), atr1=apexCalculateATR(m1);
+  const atr5=smcATR(m5), atr1=smcATR(m1);
   if (!atr5 || !atr1) return null;
   const mss=smcMicroMSS(m1, direction);
   const fvg=smcFVG(m1, direction);
@@ -2721,7 +2386,8 @@ function findApexSetup(sym, storeOverride = null, stateOverride = null) {
   const stopLoss=direction==='BUY' ? structuralSL-buffer : structuralSL+buffer;
   const riskDistance=Math.abs(price-stopLoss);
   if (!(riskDistance>atr1*0.45 && riskDistance<atr5*2.8)) return null;
-  const takeProfit=direction==='BUY' ? price+riskDistance*1.8 : price-riskDistance*1.8;
+  const userRR=Math.max(0.1, Number(ACCOUNT?.cfg?.rrRatio) || 1.8);
+  const takeProfit=direction==='BUY' ? price+riskDistance*userRR : price-riskDistance*userRR;
 
   let score=0;
   if (htf.direction===direction) score+=28;
@@ -2736,108 +2402,13 @@ function findApexSetup(sym, storeOverride = null, stateOverride = null) {
   if (score<45) return null;
 
   const setup={ symbol:sym, direction, entry:price, stopLoss, takeProfit, riskDistance,
-    rewardDistance:Math.abs(takeProfit-price), rr:1.8, score,
+    rewardDistance:Math.abs(takeProfit-price), rr:userRR, score,
     pressureZone:zone || {low:Math.min(price,stopLoss),high:Math.max(price,stopLoss)},
     reaction:mss ? mss.type : 'LIQUIDITY_REACTION',
     setupType: sweep ? (inFVG?'SMC_SWEEP_FVG':inOB?'SMC_SWEEP_OB':'SMC_SWEEP_MSS') : (inFVG?'SMC_FVG_MSS':'SMC_OB_MSS'),
-    volatility:apexCalculateVolatilityState(m15), timestamp:timestamp ?? Date.now(), strategy:'SMC ICT' };
+    volatility:smcVolatility(m15), timestamp:timestamp ?? Date.now(), strategy:'SMC ICT' };
   state.lastSignalBySymbol[symbol]=setup.timestamp;
   return setup;
-}
-
-function apexCalculateStopLoss(direction, candles, zone, config = {}) {
-  const a = apexCalculateATR(candles), latest = apexGetLatestClosedCandle(candles);
-  if (!a || !latest) return null;
-  const buffer = a * Number(APEX_CONFIG.stopLoss.structureBufferATR);
-  const minimum = Number(APEX_CONFIG.stopLoss.minimumDistancePips) * Number(config.pipSize || 0.01);
-  let stop = direction === "BUY" ? (zone?.low ?? latest.low) - buffer : (zone?.high ?? latest.high) + buffer;
-  if (direction === "BUY" && latest.close - stop < minimum) stop = latest.close - minimum;
-  if (direction === "SELL" && stop - latest.close < minimum) stop = latest.close + minimum;
-  return Number.isFinite(stop) ? stop : null;
-}
-function apexCalculateInitialTarget(direction, entry, stop) {
-  const reward = Math.max(APEX_CONFIG.takeProfit.tp1RR, APEX_CONFIG.filters.minimumRR), risk = Math.abs(entry - stop);
-  return direction === "BUY" ? entry + risk * reward : entry - risk * reward;
-}
-
-// Mirrors calculateRiskAmount() from the supplied module: risk-per-trade %
-// scaled by aggressive-growth, profit-protection drawdown throttling,
-// profit-lock, and post-loss-streak reduction, applied against equity.
-function apexCalculateRiskAmount(equity) {
-  if (!Number.isFinite(equity) || equity <= 0) return 0;
-  let risk = Number(APEX_CONFIG.risk.riskPerTrade);
-  if (APEX_CONFIG.growth.enabled && APEX_CONFIG.growth.aggressiveGrowth) risk *= Number(APEX_CONFIG.growth.aggressiveRiskMultiplier);
-  if (APEX_CONFIG.growth.profitProtectionEnabled && APEX_STATE.equityHighWaterMark > 0 && apexCalculateCurrentDrawdown() >= APEX_CONFIG.growth.profitProtectionDrawdown) risk *= 0.5;
-  if (APEX_CONFIG.growth.profitProtectionEnabled && APEX_STATE.dailyPnL > equity * APEX_CONFIG.growth.profitLockThreshold / 100) risk *= APEX_CONFIG.growth.profitLockRiskMultiplier;
-  if (APEX_CONFIG.risk.lossRiskReductionEnabled && APEX_STATE.consecutiveLosses > 0) risk *= Math.pow(APEX_CONFIG.risk.lossRiskMultiplier, APEX_STATE.consecutiveLosses);
-  return equity * Math.min(Math.max(0, risk), Number(APEX_CONFIG.risk.maxRiskPerTrade)) / 100;
-}
-
-// Mirrors calculatePositionSize() from the supplied module. symbolInfo:
-// { valuePerPriceUnit, minimumLotSize, maximumLotSize, lotStep }.
-function apexCalculatePositionSize(symbol, entry, stop, equity, symbolInfo = {}) {
-  const risk = apexCalculateRiskAmount(equity), distance = Math.abs(entry - stop), value = Number(symbolInfo.valuePerPriceUnit);
-  if (distance <= 0 || risk <= 0 || !Number.isFinite(value) || value <= 0) return 0;
-  const min = Number(symbolInfo.minimumLotSize || APEX_CONFIG.lots.minimumLotSize);
-  const max = Number(symbolInfo.maximumLotSize || APEX_CONFIG.lots.maximumLotSize);
-  const step = Number(symbolInfo.lotStep || APEX_CONFIG.lots.lotStep);
-  if (!Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(step) || step <= 0 || min > max) return 0;
-  let lots = Math.floor(Math.min(risk / (distance * value), max) / step) * step;
-  if (lots < min) {
-    if (APEX_CONFIG.risk.rejectIfMinimumLotExceedsRisk) return 0;
-    lots = min;
-  }
-  return Number(lots.toFixed(8));
-}
-
-// Mirrors riskCheck() from the supplied module, evaluated against the
-// APEX_STATE mirror that apexSyncState() refreshes from ACCOUNT.
-function apexRiskCheck(sym, setup = null) {
-  apexResetDailyStateIfNeeded();
-  if (!APEX_CONFIG.risk.enabled) return { allowed: true, reason: "Risk engine is disabled." };
-  const symbol = SYM[sym].label;
-  const now = Date.now(), cooldown = Number(APEX_CONFIG.risk.cooldownMinutes) * 60000;
-  const checks = [
-    [!APEX_CONFIG.strategy.enabled, "Strategy is disabled."],
-    [APEX_STATE.openTrades.length >= APEX_CONFIG.risk.maxOpenTrades, "Maximum number of open trades reached."],
-    [APEX_STATE.tradesToday >= APEX_CONFIG.risk.maxTradesPerDay, "Maximum number of daily trades reached."],
-    [APEX_STATE.dailyRiskUsed >= APEX_CONFIG.risk.dailyRiskLimit, "Daily risk limit reached."],
-    [apexCalculateCurrentDrawdown() >= APEX_CONFIG.risk.maxDrawdown, "Maximum drawdown limit reached."],
-    [APEX_STATE.consecutiveLosses >= APEX_CONFIG.risk.maxConsecutiveLosses, "Maximum consecutive losses reached."],
-    [APEX_STATE.lastLossTime > 0 && now - APEX_STATE.lastLossTime < cooldown, "Loss cooldown is active."],
-    [APEX_STATE.openTrades.filter(t => t.symbol === symbol).length >= APEX_CONFIG.risk.maxSymbolExposure, "Maximum symbol exposure reached."],
-    [setup && APEX_STATE.openTrades.some(t => t.symbol === symbol && t.direction !== setup.direction), "Opposite position already exists for this symbol."]
-  ];
-  for (const [blocked, reason] of checks) if (blocked) return { allowed: false, reason };
-  const session = apexGetSessionStatus();
-  return session.allowed ? { allowed: true, reason: "All risk checks passed." } : { allowed: false, reason: `Trading session unavailable: ${session.session}.` };
-}
-
-function apexCalculateCurrentDrawdown() {
-  if (APEX_STATE.equityHighWaterMark <= 0 || !Number.isFinite(APEX_STATE.equity)) return 0;
-  return Math.max(0, (APEX_STATE.equityHighWaterMark - APEX_STATE.equity) / APEX_STATE.equityHighWaterMark * 100);
-}
-
-// Refreshes the APEX_STATE mirror from the terminal's real paper account
-// (ACCOUNT) immediately before every setup/risk evaluation — this is the
-// plumbing that lets apexCalculateRiskAmount()/apexRiskCheck() (both taken
-// verbatim from the supplied module) see live numbers without keeping a
-// second, divergent ledger.
-function apexSyncState() {
-  const day = utcDateStr();
-  const dayOf = ms => new Date(ms).toISOString().slice(0, 10);
-  APEX_STATE.equity = computeEquity();
-  APEX_STATE.accountBalance = ACCOUNT.balance;
-  APEX_STATE.equityHighWaterMark = Math.max(APEX_STATE.equityHighWaterMark || 0, ACCOUNT.peakEquity || 0, APEX_STATE.equity);
-  APEX_STATE.dailyPnL = APEX_STATE.equity - ACCOUNT.dailyStartBalance;
-  APEX_STATE.consecutiveLosses = ACCOUNT.lossStreak;
-  APEX_STATE.lastLossTime = ACCOUNT.lastLossAt || 0;
-  APEX_STATE.openTrades = ACCOUNT.openPositions.map(p => ({ symbol: SYM[p.sym].label, direction: p.dir === 'bullish' ? 'BUY' : 'SELL' }));
-  const openToday = ACCOUNT.openPositions.filter(p => dayOf(p.openedAt) === day);
-  const closedToday = ACCOUNT.closedTrades.filter(t => dayOf(t.openedAt) === day);
-  APEX_STATE.tradesToday = openToday.length + closedToday.length;
-  const riskToday = openToday.reduce((s, p) => s + (p.riskAmount || 0), 0) + closedToday.reduce((s, t) => s + (t.riskAmount || 0), 0);
-  APEX_STATE.dailyRiskUsed = APEX_STATE.equity > 0 ? (riskToday / APEX_STATE.equity) * 100 : 0;
 }
 
 // ---------- Trade lifecycle ----------
@@ -2861,17 +2432,15 @@ function maybeEnterTrade(sym){
   const gate = safetyGate(sym);
   if (!gate.passed) return;
 
-  // APEX is the authoritative entry signal: H1 structure bias → M15 impulse
-  // → M5 pullback-zone + rejection confirmation, gated further by session
-  // window, volatility state, and one-signal-per-bar dedup inside
-  // findApexSetup(). No setup, no trade.
-  const setup = findApexSetup(sym);
+  // SMC/ICT is the only entry signal: market structure, liquidity sweep, MSS,
+  // displacement and FVG/order-block confluence. No SMC/ICT setup, no trade.
+  const setup = findSMCSetup(sym);
   if (!setup) return;
 
-  apexSyncState();
-  const risk = apexRiskCheck(sym, setup);
+  smcSyncState();
+  const risk = smcRiskCheck(sym, setup);
   if (!risk.allowed) {
-    logFeed(`[${SYM[sym].label}] APEX setup found but blocked — ${risk.reason}`, 'risk');
+    logFeed(`[${SYM[sym].label}] SMC/ICT setup found but blocked — ${risk.reason}`, 'risk');
     return;
   }
 
@@ -2886,11 +2455,11 @@ function maybeEnterTrade(sym){
   // per-lot convention (100 for XAU, 1 for BTC) the rest of the terminal
   // already uses for units/lots conversion.
   const perLot = sym === 'XAU' ? 100 : 1;
-  const lots = apexCalculatePositionSize(sym, entry, sl, APEX_STATE.equity, {
+  const lots = smcCalculatePositionSize(sym, entry, sl, SMC_STATE.equity, {
     valuePerPriceUnit: perLot,
     minimumLotSize: ACCOUNT.cfg.minLot,
     maximumLotSize: ACCOUNT.cfg.maxLot,
-    lotStep: APEX_CONFIG.lots.lotStep,
+    lotStep: SMC_CONFIG.lots.lotStep,
   });
   if (!(lots > 0)) return; // below minimum lot for the risk budget, or size() rejected it
 
@@ -2899,13 +2468,13 @@ function maybeEnterTrade(sym){
 
   // Margin check at the configured leverage: never open a position that
   // would require more margin than is currently free, and hold back
-  // APEX's configured margin reserve on top of that.
+  // SMC/ICT's configured margin reserve on top of that.
   const marginInUse = ACCOUNT.openPositions.reduce((s,p) => s + Math.abs(p.units) * (SYM[p.sym].price || p.entry) / ACCOUNT.cfg.leverage, 0);
   const requiredMargin = units * entry / ACCOUNT.cfg.leverage;
   const freeMargin = computeEquity() - marginInUse;
-  const reserve = computeEquity() * (Number(APEX_CONFIG.risk.reserveMarginPercent) / 100);
+  const reserve = computeEquity() * (Number(SMC_CONFIG.execution.reserveMarginPercent) / 100);
   if (requiredMargin > freeMargin - reserve) {
-    logFeed(`[${SYM[sym].label}] entry skipped — required margin $${requiredMargin.toFixed(2)} exceeds free margin $${freeMargin.toFixed(2)} minus APEX's ${APEX_CONFIG.risk.reserveMarginPercent}% reserve at 1:${ACCOUNT.cfg.leverage} leverage`, 'risk');
+    logFeed(`[${SYM[sym].label}] entry skipped — required margin $${requiredMargin.toFixed(2)} exceeds free margin $${freeMargin.toFixed(2)} minus SMC/ICT's ${SMC_CONFIG.execution.reserveMarginPercent}% reserve at 1:${ACCOUNT.cfg.leverage} leverage`, 'risk');
     return;
   }
 
@@ -2915,12 +2484,12 @@ function maybeEnterTrade(sym){
     slDist, rr: setup.rr,
     openedAt: Date.now(), beMoved: false,
     scoreAtEntry: setup.score,
-    apexSetup: true,
+    strategy: 'SMC ICT',
   };
   ACCOUNT.openPositions.push(pos);
   persistAccount();
   updatePositionUIField(sym, pos);
-  logFeed(`[${SYM[sym].label}] APEX ${dir.toUpperCase()} opened @ ${entry.toFixed(SYM[sym].decimals)} · ${lots.toFixed(2)} lots · SL ${sl.toFixed(SYM[sym].decimals)} · TP ${tp.toFixed(SYM[sym].decimals)} · risk $${riskAmount.toFixed(2)} · RR ${setup.rr.toFixed(2)} (score ${setup.score})`, 'trade');
+  logFeed(`[${SYM[sym].label}] SMC/ICT ${dir.toUpperCase()} opened @ ${entry.toFixed(SYM[sym].decimals)} · ${lots.toFixed(2)} lots · SL ${sl.toFixed(SYM[sym].decimals)} · TP ${tp.toFixed(SYM[sym].decimals)} · risk $${riskAmount.toFixed(2)} · RR ${setup.rr.toFixed(2)} (score ${setup.score})`, 'trade');
   renderPositionsDrawer();
   if (isSymbolVisible(sym)) drawChart();
 }
@@ -3518,7 +3087,7 @@ function btMaybeEnter(acc, sym, setup, bar, cfg, store){
 // ---------- Core replay loop for one symbol ----------
 function btRunSymbol(sym, m1Candles, cfg, sharedAccount, store, progressCb){
   const acc = sharedAccount;
-  const btApexState = { lastSignalBySymbol: {} };
+  const btSMCState = { lastSignalBySymbol: {} };
   for (let i = 0; i < m1Candles.length; i++) {
     if (btCancelFlag) break;
     const bar = m1Candles[i];
@@ -3531,7 +3100,7 @@ function btRunSymbol(sym, m1Candles, cfg, sharedAccount, store, progressCb){
     btAppendM1(store, sym, bar);
     btManagePositions(acc, sym, bar, cfg);
 
-    const setup = findApexSetup(sym, store, btApexState);
+    const setup = findSMCSetup(sym, store, btSMCState);
 
     const equity = btEquity(acc, (s) => store[s].price);
     acc.peakEquity = Math.max(acc.peakEquity, equity);
@@ -3740,8 +3309,8 @@ function cancelBacktest(){
 /* ============================================================
    LIVE ON-CHART REPLAY LOOP
    ------------------------------------------------------------
-   Runs the exact same per-bar logic as the old synchronous loop
-   (btAppendM1 → btManagePositions → APEX setup detection → equity/DD/
+   Runs the same per-bar SMC/ICT logic as the synchronous backtest loop
+   (btAppendM1 → btManagePositions → SMC/ICT setup detection → equity/DD/
    target checks → btMaybeEnter) but paced with setTimeout instead
    of run start-to-finish, yielding to the browser after every
    batch so the main chart and dashboard repaint mid-computation.
@@ -3755,9 +3324,9 @@ function btRunLiveLoop(timeline, acc, store, cfg, symbols, startEpoch, endEpoch)
   return new Promise((resolve, reject) => {
     btLiveCtl = { paused:false, cancelled:false, speed:1, idx:0 };
     const total = timeline.length;
-    // Backtest signal state must be local to this replay. The live APEX state
+    // Backtest signal state must be local to this replay. The live SMC state
     // cannot be referenced here because it belongs to the real-time engine.
-    const btApexState = { lastSignalBySymbol: {} };
+    const btSMCState = { lastSignalBySymbol: {} };
     let lastAnalysis = {};
     let targetAnnounced = false;
 
@@ -3790,7 +3359,7 @@ function btRunLiveLoop(timeline, acc, store, cfg, symbols, startEpoch, endEpoch)
         }
         btAppendM1(store, sym, bar);
         btManagePositions(acc, sym, bar, cfg);
-        const setup = findApexSetup(sym, store, btApexState);
+        const setup = findSMCSetup(sym, store, btSMCState);
         // Keep the replay dashboard independent from the live ANALYSIS object.
         // A setup is enough to report current direction/quality without leaking
         // real-time state into historical testing.
@@ -4613,7 +4182,7 @@ updateModeBadge();
 connectDeriv();
 connectBinance();
 logFeed('Confluence Terminal booted — Stage 5 (manual start/stop, audit trail, live performance charts, on-chart order lines)', 'system');
-setTimeout(() => { if (canTradeSymbol('XAU')) runAnalysis('XAU'); if (canTradeSymbol('BTC')) runAnalysis('BTC'); }, 6000);
+setTimeout(() => { if (canTradeSymbol('XAU')) runSMCAnalysis('XAU'); if (canTradeSymbol('BTC')) runSMCAnalysis('BTC'); }, 6000);
 setInterval(riskEngineTick, 3000);
 
 if ('serviceWorker' in navigator) {
