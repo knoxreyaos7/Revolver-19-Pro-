@@ -3812,9 +3812,12 @@ function btStopReplay(){
      so a working endpoint is not abandoned on a normal blip.
    ============================================================ */
 const DERIV_WS_ENDPOINTS = [
-  'wss://api.derivws.com/trading/v1/options/ws/public', // current public gateway — no app_id/auth required
-  'wss://ws.derivws.com/websockets/v3?app_id=1089',      // legacy gateway (public demo app_id) — fallback only
-  'wss://ws.binaryws.com/websockets/v3?app_id=1089',     // legacy alt-domain — fallback only
+  // The v3 endpoint speaks the request schema used by this terminal
+  // (ticks / ticks_history). Keep it first; the newer Options public
+  // endpoint uses a different API surface and is therefore not a drop-in
+  // replacement for these messages.
+  'wss://ws.derivws.com/websockets/v3?app_id=1089',
+  'wss://ws.binaryws.com/websockets/v3?app_id=1089'
 ];
 const DERIV_SYMBOL = 'frxXAUUSD';
 let _derivWS = null;
@@ -3875,6 +3878,14 @@ function connectDeriv(){
     document.getElementById('cfgXauStatus').className = 'conn-status ok';
     logFeed('Deriv WebSocket connected — streaming frxXAUUSD via ' + url, 'system');
     _derivHeartbeat = setInterval(() => { try{ ws.send(JSON.stringify({ping:1})); }catch(_){} }, 25000);
+    // If the socket opens but the symbol subscription never produces data,
+    // fail over instead of remaining falsely marked as connected.
+    setTimeout(() => {
+      if (_derivWS === ws && !ws._gotTick) {
+        logFeed('Deriv opened but produced no market data — failing over', 'error');
+        try { ws.close(); } catch(_) {}
+      }
+    }, 12000);
 
     // Stale-feed watchdog: candle build-up depends on ticks arriving — if
     // none show up for 30s despite the socket claiming to be open, force a
@@ -3939,7 +3950,11 @@ function connectDeriv(){
 }
 
 // ---------- Binance (BTCUSD) ----------
-const BINANCE_WS_URL = 'wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/btcusdt@kline_1m/btcusdt@kline_5m/btcusdt@kline_15m';
+const BINANCE_WS_ENDPOINTS = [
+  'wss://stream.binance.com:443/stream?streams=btcusdt@ticker/btcusdt@kline_1m/btcusdt@kline_5m/btcusdt@kline_15m',
+  'wss://data-stream.binance.vision/stream?streams=btcusdt@ticker/btcusdt@kline_1m/btcusdt@kline_5m/btcusdt@kline_15m'
+];
+let _binanceEndpointIdx = 0;
 const BINANCE_GRAN_MAP = { '1m':60, '5m':300, '15m':900 };
 const BINANCE_REST_KLINES = 'https://api.binance.com/api/v3/klines';
 let _binanceWS = null;
@@ -3974,10 +3989,26 @@ function connectBinance(){
 
   seedBinanceHistory();
 
-  const ws = new WebSocket(BINANCE_WS_URL);
+  const url = BINANCE_WS_ENDPOINTS[_binanceEndpointIdx % BINANCE_WS_ENDPOINTS.length];
+  let ws;
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    logFeed('Binance WebSocket could not be created: ' + e.message, 'error');
+    _binanceEndpointIdx++;
+    if (autoReconnect) _binanceReconnectTimer = setTimeout(connectBinance, 2000);
+    return;
+  }
+  ws._openedOk = false;
   _binanceWS = ws;
 
+  const openTimeout = setTimeout(() => {
+    if (ws.readyState !== WebSocket.OPEN) { try { ws.close(); } catch(_) {} }
+  }, 8000);
+
   ws.onopen = () => {
+    ws._openedOk = true;
+    clearTimeout(openTimeout);
     setSymConnected('BTC', true);
     document.getElementById('cfgBtcStatus').textContent = '● connected';
     document.getElementById('cfgBtcStatus').className = 'conn-status ok';
@@ -4028,6 +4059,8 @@ function connectBinance(){
   ws.onerror = () => { logFeed('Binance WebSocket error'); };
 
   ws.onclose = () => {
+    clearTimeout(openTimeout);
+    if (!ws._openedOk) _binanceEndpointIdx++;
     _binanceWS = null;
     if (_binanceHeartbeatCheck) { clearInterval(_binanceHeartbeatCheck); _binanceHeartbeatCheck = null; }
     setSymConnected('BTC', false);
