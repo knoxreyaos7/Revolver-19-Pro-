@@ -2091,7 +2091,7 @@ let ACCOUNT = null;
    position is ever opened, regardless of the Auto-enter toggle,
    the setup score, or the safety gate. Already-open positions
    still continue to be managed (SL/TP/breakeven) even when
-   stopped, since leaving a live trade unmanaged would be worse.
+   stopped, every existing simulated position is immediately closed at the latest available market price.
    ============================================================ */
 const BOT_STATE_KEY = 'confluence_bot_state_v1';
 let BOT_STATE = { running: false };
@@ -2104,14 +2104,64 @@ function loadBotState(){
 function persistBotState(){
   try { localStorage.setItem(BOT_STATE_KEY, JSON.stringify(BOT_STATE)); } catch(_) {}
 }
+// Immediately liquidates every simulated open position at the latest available
+// market price. This is intentionally separate from managePositions(): a manual
+// STOP is an explicit operator command, not a request to wait for SL/TP.
+function closeAllOpenPositions(reason = 'Bot stopped — manual market close'){
+  if (!ACCOUNT || !ACCOUNT.openPositions.length) return 0;
+  const positions = ACCOUNT.openPositions.splice(0);
+  let closed = 0;
+
+  for (const p of positions) {
+    const livePrice = Number(SYM[p.sym] && SYM[p.sym].price);
+    // If the feed is temporarily unavailable, use the last known entry as a
+    // deterministic fallback rather than leaving the position open after STOP.
+    const exit = Number.isFinite(livePrice) && livePrice > 0 ? livePrice : p.entry;
+    const sign = p.dir === 'bullish' ? 1 : -1;
+    const pnl = p.units * (exit - p.entry) * sign;
+
+    ACCOUNT.balance += pnl;
+    ACCOUNT.closedTrades.unshift({
+      sym: p.sym, dir: p.dir, entry: p.entry, exit, pnl, reason,
+      closedAt: Date.now(), openedAt: p.openedAt, scoreAtEntry: p.scoreAtEntry,
+      riskAmount: p.riskAmount,
+    });
+    closed++;
+    logFeed(`[${SYM[p.sym].label}] SIM ${p.dir.toUpperCase()} force-closed @ ${exit.toFixed(SYM[p.sym].decimals)} · ${reason} · P/L ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, 'trade');
+    if (isSymbolVisible(p.sym)) updatePositionUIField(p.sym, null);
+  }
+
+  if (ACCOUNT.closedTrades.length > 100) ACCOUNT.closedTrades.length = 100;
+  // A deliberate manual shutdown must not leave a stale loss-streak state that
+  // prevents the user from restarting the bot.
+  ACCOUNT.lossStreak = 0;
+  ACCOUNT.cooldownUntil = 0;
+  persistAccount();
+  updateAccountUI();
+  renderPositionsDrawer();
+  drawChart();
+  return closed;
+}
+
 function toggleBotRunning(){
-  BOT_STATE.running = !BOT_STATE.running;
+  // START
+  if (!BOT_STATE.running) {
+    BOT_STATE.running = true;
+    persistBotState();
+    applyBotStateUI();
+    updateModeBadge();
+    logFeed('▶ Bot manually STARTED — auto-entries armed (subject to Auto-enter toggle and safety gate)', 'system');
+    return;
+  }
+
+  // STOP = stop new entries AND immediately close every existing position.
+  // Set the state first so no concurrent risk-engine tick can open a new trade.
+  BOT_STATE.running = false;
   persistBotState();
+  const closed = closeAllOpenPositions();
   applyBotStateUI();
   updateModeBadge();
-  logFeed(BOT_STATE.running
-    ? '▶ Bot manually STARTED — auto-entries armed (subject to Auto-enter toggle and safety gate)'
-    : '⏹ Bot manually STOPPED — no new trades will be taken', 'system');
+  logFeed(`⏹ Bot manually STOPPED — ${closed} open trade${closed === 1 ? '' : 's'} closed immediately`, 'system');
 }
 function applyBotStateUI(){
   const label = BOT_STATE.running ? '⏹ Stop Bot' : '▶ Start Bot';
@@ -2314,7 +2364,7 @@ const APEX_CONFIG = {
     BTCUSD: { enabled: true, pipSize: 0.01, minImpulseATR: 1.2, pullbackMin: 0.382, pullbackMax: 0.618, maxSpreadPips: 250, minATR: 0.5, maxATR: 3 }
   },
   timeframes: { bias: "H1", setup: "M15", entry: "M5" },
-  strategy: { enabled: true, minimumSetupScore: 62, useTrendFilter: true, useImpulseFilter: true, usePullbackZone: true, useRejectionConfirmation: true, useVolumeFilter: false, useVolatilityFilter: true, allowContinuation: true, allowReversal: false, requireClosedCandle: true, oneSignalPerBar: true, minimumStructureStrength: 45, minimumImpulseStrength: 0.9 },
+  strategy: { enabled: true, minimumSetupScore: 58, useTrendFilter: true, useImpulseFilter: true, usePullbackZone: true, useRejectionConfirmation: true, useVolumeFilter: false, useVolatilityFilter: true, allowContinuation: true, allowReversal: false, requireClosedCandle: true, oneSignalPerBar: true, minimumStructureStrength: 40, minimumImpulseStrength: 0.65 },
   risk: { enabled: true, riskPerTrade: 0.25, maxRiskPerTrade: 1, dailyRiskLimit: 7.5, maxDrawdown: 10, maxOpenTrades: 2, maxTradesPerDay: 40, maxConsecutiveLosses: 5, cooldownMinutes: 10, lossRiskReductionEnabled: true, lossRiskMultiplier: 0.75, maxSymbolExposure: 1, maxCorrelatedExposure: 1, reserveMarginPercent: 15, rejectIfMinimumLotExceedsRisk: true },
   growth: { enabled: true, compoundFromEquity: true, aggressiveGrowth: false, aggressiveRiskMultiplier: 1, profitProtectionEnabled: true, profitProtectionDrawdown: 4, profitLockThreshold: 5, profitLockRiskMultiplier: 0.5 },
   lots: { minimumLotSize: 0.01, maximumLotSize: 100, lotStep: 0.01 },
@@ -2522,94 +2572,104 @@ function apexBuildH1(m15) {
 // Runs the full APEX H1->M15->M5 setup detector for `sym` ('XAU' | 'BTC')
 // against the terminal's live candle stores. `symbol` inside APEX_CONFIG is
 // keyed by SYM[sym].label ('XAUUSD' / 'BTCUSD').
-function findApexSetup(sym) {
+function findApexSetup(sym, storeOverride = null, stateOverride = null) {
+  // APEX FLOW v4 — trend-aligned pullback + continuation model.
+  // It deliberately offers two entry paths (deep pullback or shallow continuation)
+  // while keeping the higher-timeframe trend and a closed-candle confirmation mandatory.
   if (!APEX_CONFIG.strategy.enabled) return null;
   const symbol = SYM[sym].label;
   const config = APEX_CONFIG.symbols[symbol];
   if (!config?.enabled) return null;
-
-  const m15Raw = SYM[sym].candles[900], m5Raw = SYM[sym].candles[300], m1Raw = SYM[sym].candles[60];
+  const store = storeOverride || SYM;
+  const state = stateOverride || APEX_STATE;
+  const m15Raw = store[sym].candles[900], m5Raw = store[sym].candles[300], m1Raw = store[sym].candles[60];
   if (!m15Raw || !m5Raw || !m1Raw) return null;
   const m15 = apexGetValidCandles(m15Raw.slice(0, -1));
   const m5 = apexGetValidCandles(m5Raw.slice(0, -1));
   const m1 = apexGetValidCandles(m1Raw.slice(0, -1));
-  if (m15.length < 55 || m5.length < 30 || m1.length < 30) return null;
+  if (m15.length < 55 || m5.length < 30 || m1.length < 8) return null;
 
   const latestM1 = m1.at(-1), timestamp = apexGetCandleTimestamp(latestM1);
-  if (APEX_CONFIG.strategy.oneSignalPerBar && timestamp !== null && APEX_STATE.lastSignalBySymbol[symbol] === timestamp) return null;
+  state.lastSignalBySymbol = state.lastSignalBySymbol || {};
+  if (APEX_CONFIG.strategy.oneSignalPerBar && timestamp !== null && state.lastSignalBySymbol[symbol] === timestamp) return null;
 
-  // APEX FLOW: simple but sophisticated three-layer model:
-  // 1) M15 direction, 2) M5 pressure/expansion + pullback, 3) M1 reaction OR micro-break.
-  // This intentionally avoids a long chain of independent gates so the engine can
-  // participate repeatedly during a directional intraday move.
   const m15Close = m15.map(c => c.close), e20 = ema(m15Close, 20), e50 = ema(m15Close, 50);
-  if (!e20 || !e50) return null;
+  const m5Close = m5.map(c => c.close), e5 = ema(m5Close, 20);
+  if (!e20 || !e50 || !e5) return null;
   const e20Now = e20.at(-1), e50Now = e50.at(-1), e20Prev = e20.at(-4) ?? e20Now;
-  const direction = e20Now > e50Now && e20Now > e20Prev ? 'BUY' : e20Now < e50Now && e20Now < e20Prev ? 'SELL' : null;
+  const direction = e20Now > e50Now && e20Now >= e20Prev ? 'BUY' : e20Now < e50Now && e20Now <= e20Prev ? 'SELL' : null;
   if (!direction) return null;
 
   const vol = apexCalculateVolatilityState(m15);
   if (APEX_CONFIG.strategy.useVolatilityFilter && vol.state === 'EXTREME') return null;
-  const atr5 = apexCalculateATR(m5);
-  if (!atr5) return null;
+  const atr5 = apexCalculateATR(m5), atr1 = apexCalculateATR(m1);
+  if (!atr5 || !atr1) return null;
 
-  // Find the latest M5 pressure/expansion cycle. The impulse is deliberately
-  // modest (>=0.9 ATR) so normal intraday waves can produce repeatable setups.
-  const recent = m5.slice(-8);
-  const expansion = recent.slice(-4);
-  const base = recent.slice(0, 4);
+  // Recent M5 directional leg. A modest threshold admits ordinary intraday waves
+  // instead of waiting only for unusually large impulses.
+  const recent = m5.slice(-8), expansion = recent.slice(-5);
   const move = expansion.at(-1).close - expansion[0].open;
-  const directional = expansion.filter(c => direction === 'BUY' ? c.close > c.open : c.close < c.open).length;
-  const avgBodyRatio = expansion.reduce((t,c) => t + (c.high > c.low ? Math.abs(c.close-c.open)/(c.high-c.low) : 0),0)/expansion.length;
-  const impulseRange = Math.max(...expansion.map(c=>c.high)) - Math.min(...expansion.map(c=>c.low));
-  const impulseOk = (direction === 'BUY' ? move > 0 : move < 0) && Math.abs(move) >= atr5 * 0.9 && directional >= 3 && avgBodyRatio >= 0.42;
-  if (!impulseOk) return null;
+  const directionalBars = expansion.filter(c => direction === 'BUY' ? c.close > c.open : c.close < c.open).length;
+  const alignedMove = direction === 'BUY' ? move : -move;
+  const momentum = alignedMove / atr5;
+  if (momentum < 0.35 && directionalBars < 3) return null;
 
-  const impulseHigh = Math.max(...expansion.map(c=>c.high));
-  const impulseLow = Math.min(...expansion.map(c=>c.low));
+  const impulseHigh = Math.max(...expansion.map(c=>c.high)), impulseLow = Math.min(...expansion.map(c=>c.low));
   const range = impulseHigh - impulseLow;
   if (!(range > 0)) return null;
-  // Pressure zone is the 35%-70% retracement of the latest expansion.
-  const zone = direction === 'BUY'
-    ? { high: impulseHigh - range * 0.35, low: impulseHigh - range * 0.70 }
-    : { low: impulseLow + range * 0.35, high: impulseLow + range * 0.70 };
+  const deepZone = direction === 'BUY'
+    ? { high: impulseHigh - range * 0.30, low: impulseHigh - range * 0.72 }
+    : { low: impulseLow + range * 0.30, high: impulseLow + range * 0.72 };
   const price = latestM1.close;
-  const inZone = apexPriceInsideZone(price, zone, atr5 * 0.08);
-  if (!inZone) return null;
+  const inDeepZone = apexPriceInsideZone(price, deepZone, atr5 * 0.10);
+  const m5Ema = e5.at(-1);
+  const nearTrendMean = Math.abs(price - m5Ema) <= atr5 * 0.45;
+  const shallowContinuation = APEX_CONFIG.strategy.allowContinuation && nearTrendMean;
+  if (!inDeepZone && !shallowContinuation) return null;
 
+  // Closed M1 confirmation: reversal reaction OR a break of the prior micro structure.
   const prev = m1.at(-2), body = Math.abs(latestM1.close-latestM1.open), m1Range = latestM1.high-latestM1.low;
-  if (!prev || !(m1Range > 0) || body/m1Range < 0.40) return null;
+  if (!prev || !(m1Range > 0) || body/m1Range < 0.32) return null;
   const closeLocation = (latestM1.close-latestM1.low)/m1Range;
   const reaction = direction === 'BUY'
-    ? latestM1.close > latestM1.open && closeLocation >= 0.62 && latestM1.close >= prev.close
-    : latestM1.close < latestM1.open && closeLocation <= 0.38 && latestM1.close <= prev.close;
+    ? latestM1.close > latestM1.open && closeLocation >= 0.55 && latestM1.close >= prev.close
+    : latestM1.close < latestM1.open && closeLocation <= 0.45 && latestM1.close <= prev.close;
+  const microWindow = m1.slice(-5,-1);
   const microBreak = direction === 'BUY'
-    ? latestM1.close > Math.max(prev.high, ...m1.slice(-4,-1).map(c=>c.high))
-    : latestM1.close < Math.min(prev.low, ...m1.slice(-4,-1).map(c=>c.low));
+    ? latestM1.close > Math.max(...microWindow.map(c=>c.high))
+    : latestM1.close < Math.min(...microWindow.map(c=>c.low));
   if (!reaction && !microBreak) return null;
 
-  const extension = direction === 'BUY' ? Math.max(0, price-zone.high)/atr5 : Math.max(0, zone.low-price)/atr5;
-  if (APEX_CONFIG.filters.avoidChasing && extension > 0.65) return null;
+  // Avoid entering after a stretched move away from the M5 mean.
+  const extension = Math.abs(price - m5Ema) / atr5;
+  if (APEX_CONFIG.filters.avoidChasing && extension > 1.15) return null;
 
-  const stopLoss = direction === 'BUY' ? zone.low - atr5*0.15 : zone.high + atr5*0.15;
+  const zone = inDeepZone ? deepZone : (direction === 'BUY'
+    ? { low: Math.min(m5Ema, price) - atr5*0.25, high: Math.max(m5Ema, price) + atr5*0.05 }
+    : { low: Math.min(m5Ema, price) - atr5*0.05, high: Math.max(m5Ema, price) + atr5*0.25 });
+  const stopLoss = direction === 'BUY'
+    ? Math.min(zone.low, latestM1.low) - Math.max(atr1*0.35, atr5*0.10)
+    : Math.max(zone.high, latestM1.high) + Math.max(atr1*0.35, atr5*0.10);
   const riskDistance = Math.abs(price-stopLoss);
-  if (!(riskDistance > atr5*0.18)) return null;
-  const takeProfit = direction === 'BUY' ? price + riskDistance*1.6 : price - riskDistance*1.6;
-  const rr = 1.6;
+  if (!(riskDistance > atr1*0.6)) return null;
+  const takeProfit = direction === 'BUY' ? price + riskDistance*1.5 : price - riskDistance*1.5;
 
   let score = 0;
-  if ((direction === 'BUY' && e20Now > e50Now) || (direction === 'SELL' && e20Now < e50Now)) score += 22;
-  if (Math.abs(move)/atr5 >= 0.9) score += 18;
-  if (inZone) score += 18;
-  if (reaction) score += 24; else if (microBreak) score += 19;
-  if (avgBodyRatio >= 0.5) score += 8;
-  if (vol.state === 'NORMAL') score += 5; else if (vol.state === 'HIGH') score += 2;
-  if (extension <= 0.35) score += 5;
+  score += 28; // HTF trend is mandatory
+  if (momentum >= 0.65) score += 16; else if (directionalBars >= 4) score += 12; else score += 8;
+  if (inDeepZone) score += 18; else if (shallowContinuation) score += 13;
+  if (reaction) score += 18; else if (microBreak) score += 14;
+  if (vol.state === 'NORMAL') score += 7; else if (vol.state === 'HIGH') score += 3;
+  if (extension <= 0.55) score += 5;
   score = Math.min(100, score);
   if (score < Number(APEX_CONFIG.strategy.minimumSetupScore)) return null;
 
-  const setup = { symbol: sym, direction, entry: price, stopLoss, takeProfit, riskDistance, rewardDistance: Math.abs(takeProfit-price), rr, score, pressureZone: zone, reaction: reaction ? 'REACTION' : 'MICRO_BREAK', volatility: vol, timestamp: timestamp ?? Date.now(), strategy: 'APEX FLOW' };
-  APEX_STATE.lastSignalBySymbol[symbol] = setup.timestamp;
+  const setup = { symbol: sym, direction, entry: price, stopLoss, takeProfit,
+    riskDistance, rewardDistance: Math.abs(takeProfit-price), rr: 1.5, score,
+    pressureZone: zone, reaction: reaction ? 'REACTION' : 'MICRO_BREAK',
+    setupType: inDeepZone ? 'PULLBACK' : 'CONTINUATION', volatility: vol,
+    timestamp: timestamp ?? Date.now(), strategy: 'APEX FLOW v4' };
+  state.lastSignalBySymbol[symbol] = setup.timestamp;
   return setup;
 }
 function apexCalculateStopLoss(direction, candles, zone, config = {}) {
@@ -3070,7 +3130,7 @@ function toEpochSec(dateStr, endOfDay){
   return Math.floor(new Date(iso).getTime() / 1000);
 }
 
-const BT_M1_CAP = { XAU: 14000, BTC: 16000 }; // browser-side safety cap on replayed M1 bars/symbol
+const BT_M1_CAP = { XAU: Infinity, BTC: Infinity }; // user-selected date range is authoritative
 let btSymFilter = 'XAU';
 let btCancelFlag = false;
 let btLastRun = null; // { perSym: {XAU:{...}, BTC:{...}}, combined:{...} }
@@ -3349,58 +3409,43 @@ function btManagePositions(acc, sym, bar, cfg){
   acc.openPositions = stillOpen;
 }
 
-function btSafetyGate(acc, sym, analysis, bar, cfg, store){
+function btSafetyGate(acc, sym, setup, bar, cfg, store){
   const equity = btEquity(acc, (s) => store[s].price);
-  return (
-    isSpreadHealthy(sym, store) &&
-    equity >= acc.dailyStartBalance * (1 - cfg.maxDailyLossPct/100) &&
-    !acc.openPositions.some(p => p.sym === sym) &&
-    !!(analysis && analysis.ready && analysis.regime.label !== 'volatile') &&
-    bar.epoch >= acc.cooldownUntilEpoch &&
-    !!(analysis && analysis.ready && analysis.score >= cfg.minScore && analysis.direction) &&
-    !acc.haltedByDD && !acc.haltedByMaxTrades
-  );
+  const dailyOk = cfg.maxDailyLossPct <= 0 || equity >= acc.dailyStartBalance * (1 - cfg.maxDailyLossPct/100);
+  return isSpreadHealthy(sym, store) && dailyOk && !acc.openPositions.some(p => p.sym === sym) &&
+    !!setup && setup.score >= cfg.minScore && bar.epoch >= acc.cooldownUntilEpoch &&
+    !acc.haltedByDD && !acc.haltedByMaxTrades;
 }
 
-function btMaybeEnter(acc, sym, analysis, bar, cfg, store){
-  if (!btSafetyGate(acc, sym, analysis, bar, cfg, store)) return;
-  const atrVal = getM5Atr(sym, store);
-  const price = bar.close;
-  if (!atrVal || price == null) return;
-  const slDist = atrVal * cfg.slAtrMult;
+function btMaybeEnter(acc, sym, setup, bar, cfg, store){
+  if (!btSafetyGate(acc, sym, setup, bar, cfg, store)) return;
+  const entry = setup.entry, sl = setup.stopLoss;
+  const slDist = Math.abs(entry - sl);
   if (!(slDist > 0)) return;
-  const dir = analysis.direction;
+  const dir = setup.direction === 'BUY' ? 'bullish' : 'bearish';
   const sign = dir === 'bullish' ? 1 : -1;
-  const entry = price;
-  const sl = entry - sign * slDist;
+  // The user-selected backtest R:R remains authoritative.
   const tp = entry + sign * slDist * cfg.rrRatio;
   const riskBase = cfg.compounding ? acc.balance : cfg.startingBalance;
   const idealRiskAmount = riskBase * (cfg.riskPct / 100);
   const idealUnits = idealRiskAmount / slDist;
-
   const perLot = sym === 'XAU' ? 100 : 1;
   let lots = idealUnits / perLot;
   lots = Math.min(cfg.maxLot, Math.max(cfg.minLot, lots));
-  const units = lots * perLot;
-  const riskAmount = Math.abs(units * slDist);
-
+  const units = lots * perLot, riskAmount = Math.abs(units * slDist);
   const marginInUse = acc.openPositions.reduce((s,p) => s + Math.abs(p.units) * (store[p.sym].price || p.entry) / cfg.leverage, 0);
   const requiredMargin = units * entry / cfg.leverage;
   const freeMargin = btEquity(acc, (s) => store[s].price) - marginInUse;
-  if (requiredMargin > freeMargin) return; // margin call protection — skip this entry
-
-  acc.openPositions.push({
-    sym, dir, entry, sl, tp, units, riskAmount, lots, slDist, rr: cfg.rrRatio,
-    openedAtEpoch: bar.epoch, beMoved:false, scoreAtEntry: analysis.score,
-  });
-  if (cfg.maxTrades > 0 && (acc.closedTrades.length + acc.openPositions.length) >= cfg.maxTrades) {
-    acc.haltedByMaxTrades = true;
-  }
+  if (requiredMargin > freeMargin) return;
+  acc.openPositions.push({ sym, dir, entry, sl, tp, units, riskAmount, lots, slDist, rr: cfg.rrRatio,
+    openedAtEpoch: bar.epoch, beMoved:false, scoreAtEntry: setup.score, setupType: setup.setupType });
+  if (cfg.maxTrades > 0 && (acc.closedTrades.length + acc.openPositions.length) >= cfg.maxTrades) acc.haltedByMaxTrades = true;
 }
 
 // ---------- Core replay loop for one symbol ----------
 function btRunSymbol(sym, m1Candles, cfg, sharedAccount, store, progressCb){
   const acc = sharedAccount;
+  const btApexState = { lastSignalBySymbol: {} };
   for (let i = 0; i < m1Candles.length; i++) {
     if (btCancelFlag) break;
     const bar = m1Candles[i];
@@ -3413,18 +3458,18 @@ function btRunSymbol(sym, m1Candles, cfg, sharedAccount, store, progressCb){
     btAppendM1(store, sym, bar);
     btManagePositions(acc, sym, bar, cfg);
 
-    const analysis = computeScore(sym, store);
+    const setup = findApexSetup(sym, store, btApexState);
 
     const equity = btEquity(acc, (s) => store[s].price);
     acc.peakEquity = Math.max(acc.peakEquity, equity);
     const dd = acc.peakEquity > 0 ? (acc.peakEquity - equity) / acc.peakEquity * 100 : 0;
-    if (dd >= cfg.maxDDPct) acc.haltedByDD = true;
+    if (cfg.maxDDPct > 0 && dd >= cfg.maxDDPct) acc.haltedByDD = true;
 
     if (!acc.targetHitAt && cfg.profitTarget > 0 && equity >= cfg.startingBalance + cfg.profitTarget) {
       acc.targetHitAt = bar.epoch;
     }
 
-    btMaybeEnter(acc, sym, analysis, bar, cfg, store);
+    btMaybeEnter(acc, sym, setup, bar, cfg, store);
 
     // sample equity curve (every bar — arrays are capped by BT_M1_CAP so this stays bounded)
     acc.equityCurve.push({ epoch: bar.epoch, equity: btEquity(acc, (s) => store[s].price) });
@@ -3504,8 +3549,8 @@ async function startBacktest(){
     rrRatio: Math.min(10, Math.max(0.5, +document.getElementById('btRR').value || 2)),
     slAtrMult: Math.min(5, Math.max(0.5, +document.getElementById('btSlAtrMult').value || 1.5)),
     minScore: Math.min(100, Math.max(0, +document.getElementById('btMinScore').value || 65)),
-    maxDailyLossPct: Math.min(20, Math.max(0.5, +document.getElementById('btMaxDailyLoss').value || 3)),
-    maxDDPct: Math.min(90, Math.max(1, +document.getElementById('btMaxDD').value || 20)),
+    maxDailyLossPct: Math.max(0, +document.getElementById('btMaxDailyLoss').value || 0),
+    maxDDPct: Math.max(0, +document.getElementById('btMaxDD').value || 0),
     maxTrades: Math.max(0, +document.getElementById('btMaxTrades').value || 0),
     breakeven: document.getElementById('btBreakeven').checked,
     compounding: document.getElementById('btCompounding').checked,
@@ -3669,16 +3714,16 @@ function btRunLiveLoop(timeline, acc, store, cfg, symbols, startEpoch, endEpoch)
         }
         btAppendM1(store, sym, bar);
         btManagePositions(acc, sym, bar, cfg);
-        const analysis = computeScore(sym, store);
+        const setup = findApexSetup(sym, store, btApexState);
         lastAnalysis[sym] = analysis;
         const equity = btEquity(acc, (s) => store[s].price);
         acc.peakEquity = Math.max(acc.peakEquity, equity);
         const dd = acc.peakEquity > 0 ? (acc.peakEquity - equity) / acc.peakEquity * 100 : 0;
-        if (dd >= cfg.maxDDPct) acc.haltedByDD = true;
+        if (cfg.maxDDPct > 0 && dd >= cfg.maxDDPct) acc.haltedByDD = true;
         if (!acc.targetHitAt && cfg.profitTarget > 0 && equity >= cfg.startingBalance + cfg.profitTarget) {
           acc.targetHitAt = bar.epoch;
         }
-        btMaybeEnter(acc, sym, analysis, bar, cfg, store);
+        btMaybeEnter(acc, sym, setup, bar, cfg, store);
         acc.equityCurve.push({ epoch: bar.epoch, equity });
       }
       btLiveCtl.idx = i;
