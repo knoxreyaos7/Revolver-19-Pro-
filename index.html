@@ -2314,8 +2314,8 @@ const APEX_CONFIG = {
     BTCUSD: { enabled: true, pipSize: 0.01, minImpulseATR: 1.2, pullbackMin: 0.382, pullbackMax: 0.618, maxSpreadPips: 250, minATR: 0.5, maxATR: 3 }
   },
   timeframes: { bias: "H1", setup: "M15", entry: "M5" },
-  strategy: { enabled: true, minimumSetupScore: 75, useTrendFilter: true, useImpulseFilter: true, usePullbackZone: true, useRejectionConfirmation: true, useVolumeFilter: false, useVolatilityFilter: true, allowContinuation: true, allowReversal: false, requireClosedCandle: true, oneSignalPerBar: true, minimumStructureStrength: 60, minimumImpulseStrength: 1.2 },
-  risk: { enabled: true, riskPerTrade: 0.5, maxRiskPerTrade: 1, dailyRiskLimit: 2, maxDrawdown: 10, maxOpenTrades: 3, maxTradesPerDay: 6, maxConsecutiveLosses: 3, cooldownMinutes: 45, lossRiskReductionEnabled: true, lossRiskMultiplier: 0.65, maxSymbolExposure: 1, maxCorrelatedExposure: 1, reserveMarginPercent: 20, rejectIfMinimumLotExceedsRisk: true },
+  strategy: { enabled: true, minimumSetupScore: 62, useTrendFilter: true, useImpulseFilter: true, usePullbackZone: true, useRejectionConfirmation: true, useVolumeFilter: false, useVolatilityFilter: true, allowContinuation: true, allowReversal: false, requireClosedCandle: true, oneSignalPerBar: true, minimumStructureStrength: 45, minimumImpulseStrength: 0.9 },
+  risk: { enabled: true, riskPerTrade: 0.25, maxRiskPerTrade: 1, dailyRiskLimit: 7.5, maxDrawdown: 10, maxOpenTrades: 2, maxTradesPerDay: 40, maxConsecutiveLosses: 5, cooldownMinutes: 10, lossRiskReductionEnabled: true, lossRiskMultiplier: 0.75, maxSymbolExposure: 1, maxCorrelatedExposure: 1, reserveMarginPercent: 15, rejectIfMinimumLotExceedsRisk: true },
   growth: { enabled: true, compoundFromEquity: true, aggressiveGrowth: false, aggressiveRiskMultiplier: 1, profitProtectionEnabled: true, profitProtectionDrawdown: 4, profitLockThreshold: 5, profitLockRiskMultiplier: 0.5 },
   lots: { minimumLotSize: 0.01, maximumLotSize: 100, lotStep: 0.01 },
   leverage: { value: 100 },
@@ -2528,60 +2528,90 @@ function findApexSetup(sym) {
   const config = APEX_CONFIG.symbols[symbol];
   if (!config?.enabled) return null;
 
-  const m15Raw = SYM[sym].candles[900], m5Raw = SYM[sym].candles[300];
-  if (!m15Raw || !m5Raw) return null;
-  const m15 = apexGetValidCandles(m15Raw.slice(0, -1)); // exclude still-forming bar
+  const m15Raw = SYM[sym].candles[900], m5Raw = SYM[sym].candles[300], m1Raw = SYM[sym].candles[60];
+  if (!m15Raw || !m5Raw || !m1Raw) return null;
+  const m15 = apexGetValidCandles(m15Raw.slice(0, -1));
   const m5 = apexGetValidCandles(m5Raw.slice(0, -1));
-  const h1 = apexGetValidCandles(apexBuildH1(m15Raw.slice(0, -1)));
-  if ([h1, m15, m5].some(c => c.length < 30)) return null;
+  const m1 = apexGetValidCandles(m1Raw.slice(0, -1));
+  if (m15.length < 55 || m5.length < 30 || m1.length < 30) return null;
 
-  const latest = m5.at(-1), timestamp = apexGetCandleTimestamp(latest);
+  const latestM1 = m1.at(-1), timestamp = apexGetCandleTimestamp(latestM1);
   if (APEX_CONFIG.strategy.oneSignalPerBar && timestamp !== null && APEX_STATE.lastSignalBySymbol[symbol] === timestamp) return null;
 
-  const h1Structure = apexDetectMarketStructure(h1), m15Structure = apexDetectMarketStructure(m15), volatility = apexCalculateVolatilityState(m15);
-  if (APEX_CONFIG.strategy.useVolatilityFilter && volatility.state === "EXTREME") return null;
+  // APEX FLOW: simple but sophisticated three-layer model:
+  // 1) M15 direction, 2) M5 pressure/expansion + pullback, 3) M1 reaction OR micro-break.
+  // This intentionally avoids a long chain of independent gates so the engine can
+  // participate repeatedly during a directional intraday move.
+  const m15Close = m15.map(c => c.close), e20 = ema(m15Close, 20), e50 = ema(m15Close, 50);
+  if (!e20 || !e50) return null;
+  const e20Now = e20.at(-1), e50Now = e50.at(-1), e20Prev = e20.at(-4) ?? e20Now;
+  const direction = e20Now > e50Now && e20Now > e20Prev ? 'BUY' : e20Now < e50Now && e20Now < e20Prev ? 'SELL' : null;
+  if (!direction) return null;
 
-  const direction = h1Structure.direction === "BULLISH" && m15Structure.direction !== "BEARISH"
-    ? "BUY"
-    : h1Structure.direction === "BEARISH" && m15Structure.direction !== "BULLISH" ? "SELL" : "NEUTRAL";
-  if (direction === "NEUTRAL") return null;
+  const vol = apexCalculateVolatilityState(m15);
+  if (APEX_CONFIG.strategy.useVolatilityFilter && vol.state === 'EXTREME') return null;
+  const atr5 = apexCalculateATR(m5);
+  if (!atr5) return null;
 
-  const impulse = apexDetectImpulse(m15, direction, config);
-  if (!impulse) return null;
+  // Find the latest M5 pressure/expansion cycle. The impulse is deliberately
+  // modest (>=0.9 ATR) so normal intraday waves can produce repeatable setups.
+  const recent = m5.slice(-8);
+  const expansion = recent.slice(-4);
+  const base = recent.slice(0, 4);
+  const move = expansion.at(-1).close - expansion[0].open;
+  const directional = expansion.filter(c => direction === 'BUY' ? c.close > c.open : c.close < c.open).length;
+  const avgBodyRatio = expansion.reduce((t,c) => t + (c.high > c.low ? Math.abs(c.close-c.open)/(c.high-c.low) : 0),0)/expansion.length;
+  const impulseRange = Math.max(...expansion.map(c=>c.high)) - Math.min(...expansion.map(c=>c.low));
+  const impulseOk = (direction === 'BUY' ? move > 0 : move < 0) && Math.abs(move) >= atr5 * 0.9 && directional >= 3 && avgBodyRatio >= 0.42;
+  if (!impulseOk) return null;
 
-  const zone = apexCalculatePullbackZone(impulse, config), price = latest.close, a = apexCalculateATR(m5);
-  if (!a) return null;
+  const impulseHigh = Math.max(...expansion.map(c=>c.high));
+  const impulseLow = Math.min(...expansion.map(c=>c.low));
+  const range = impulseHigh - impulseLow;
+  if (!(range > 0)) return null;
+  // Pressure zone is the 35%-70% retracement of the latest expansion.
+  const zone = direction === 'BUY'
+    ? { high: impulseHigh - range * 0.35, low: impulseHigh - range * 0.70 }
+    : { low: impulseLow + range * 0.35, high: impulseLow + range * 0.70 };
+  const price = latestM1.close;
+  const inZone = apexPriceInsideZone(price, zone, atr5 * 0.08);
+  if (!inZone) return null;
 
-  const inPullback = apexPriceInsideZone(price, zone, a * 0.05);
-  if (APEX_CONFIG.strategy.usePullbackZone && !inPullback) return null;
+  const prev = m1.at(-2), body = Math.abs(latestM1.close-latestM1.open), m1Range = latestM1.high-latestM1.low;
+  if (!prev || !(m1Range > 0) || body/m1Range < 0.40) return null;
+  const closeLocation = (latestM1.close-latestM1.low)/m1Range;
+  const reaction = direction === 'BUY'
+    ? latestM1.close > latestM1.open && closeLocation >= 0.62 && latestM1.close >= prev.close
+    : latestM1.close < latestM1.open && closeLocation <= 0.38 && latestM1.close <= prev.close;
+  const microBreak = direction === 'BUY'
+    ? latestM1.close > Math.max(prev.high, ...m1.slice(-4,-1).map(c=>c.high))
+    : latestM1.close < Math.min(prev.low, ...m1.slice(-4,-1).map(c=>c.low));
+  if (!reaction && !microBreak) return null;
 
-  const rejection = apexDetectRejection(m5, direction);
-  if (APEX_CONFIG.strategy.useRejectionConfirmation && !rejection) return null;
+  const extension = direction === 'BUY' ? Math.max(0, price-zone.high)/atr5 : Math.max(0, zone.low-price)/atr5;
+  if (APEX_CONFIG.filters.avoidChasing && extension > 0.65) return null;
 
-  const extension = zone ? (direction === "BUY" ? Math.max(0, price - zone.high) : Math.max(0, zone.low - price)) / a : 0;
-  const entryQuality = extension > APEX_CONFIG.filters.maximumEntryDistanceATR ? "EXTENDED" : "VALID";
-  if (APEX_CONFIG.filters.avoidChasing && entryQuality === "EXTENDED") return null;
+  const stopLoss = direction === 'BUY' ? zone.low - atr5*0.15 : zone.high + atr5*0.15;
+  const riskDistance = Math.abs(price-stopLoss);
+  if (!(riskDistance > atr5*0.18)) return null;
+  const takeProfit = direction === 'BUY' ? price + riskDistance*1.6 : price - riskDistance*1.6;
+  const rr = 1.6;
 
-  const stopLoss = apexCalculateStopLoss(direction, m5, zone, config);
-  if (!Number.isFinite(stopLoss)) return null;
+  let score = 0;
+  if ((direction === 'BUY' && e20Now > e50Now) || (direction === 'SELL' && e20Now < e50Now)) score += 22;
+  if (Math.abs(move)/atr5 >= 0.9) score += 18;
+  if (inZone) score += 18;
+  if (reaction) score += 24; else if (microBreak) score += 19;
+  if (avgBodyRatio >= 0.5) score += 8;
+  if (vol.state === 'NORMAL') score += 5; else if (vol.state === 'HIGH') score += 2;
+  if (extension <= 0.35) score += 5;
+  score = Math.min(100, score);
+  if (score < Number(APEX_CONFIG.strategy.minimumSetupScore)) return null;
 
-  const riskDistance = Math.abs(price - stopLoss);
-  if (riskDistance <= 0 || riskDistance < a * 0.25) return null;
-
-  const takeProfit = apexCalculateInitialTarget(direction, price, stopLoss);
-  const rr = Math.abs(takeProfit - price) / riskDistance;
-  const score = apexCalculateSetupScore({ bias: direction, direction, structureStrength: Math.min(h1Structure.strength, m15Structure.strength), impulseStrength: impulse.strength, inPullback, rejection: Boolean(rejection), rr, volatilityState: volatility.state, entryQuality });
-
-  if (score < APEX_CONFIG.strategy.minimumSetupScore || rr < APEX_CONFIG.filters.minimumRR) return null;
-
-  const session = apexGetSessionStatus();
-  if (!session.allowed) return null;
-
-  const setup = { symbol: sym, direction, entry: price, stopLoss, takeProfit, riskDistance, rewardDistance: Math.abs(takeProfit - price), rr, score, impulse, pullbackZone: zone, rejection, volatility, timestamp: timestamp ?? Date.now() };
+  const setup = { symbol: sym, direction, entry: price, stopLoss, takeProfit, riskDistance, rewardDistance: Math.abs(takeProfit-price), rr, score, pressureZone: zone, reaction: reaction ? 'REACTION' : 'MICRO_BREAK', volatility: vol, timestamp: timestamp ?? Date.now(), strategy: 'APEX FLOW' };
   APEX_STATE.lastSignalBySymbol[symbol] = setup.timestamp;
   return setup;
 }
-
 function apexCalculateStopLoss(direction, candles, zone, config = {}) {
   const a = apexCalculateATR(candles), latest = apexGetLatestClosedCandle(candles);
   if (!a || !latest) return null;
