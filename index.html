@@ -2572,106 +2572,179 @@ function apexBuildH1(m15) {
 // Runs the full APEX H1->M15->M5 setup detector for `sym` ('XAU' | 'BTC')
 // against the terminal's live candle stores. `symbol` inside APEX_CONFIG is
 // keyed by SYM[sym].label ('XAUUSD' / 'BTCUSD').
+// ============================================================
+// SMC / ICT SETUP ENGINE
+// ------------------------------------------------------------
+// Multi-timeframe market structure + liquidity + displacement +
+// fair-value-gap / order-block confluence. The detector only uses
+// closed candles, so the same logic can be used live and in backtests.
+// ============================================================
+function smcPivots(candles, left = 2, right = 2) {
+  const highs = [], lows = [];
+  for (let i = left; i < candles.length - right; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = i-left; j <= i+right; j++) {
+      if (j === i) continue;
+      if (candles[j].high >= candles[i].high) isHigh = false;
+      if (candles[j].low <= candles[i].low) isLow = false;
+    }
+    if (isHigh) highs.push({ price:candles[i].high, epoch:candles[i].epoch, index:i });
+    if (isLow) lows.push({ price:candles[i].low, epoch:candles[i].epoch, index:i });
+  }
+  return { highs, lows };
+}
+
+function smcStructureBias(candles) {
+  if (!candles || candles.length < 25) return { direction:null, pivots:null };
+  const pivots = smcPivots(candles.slice(-80));
+  const highs = pivots.highs, lows = pivots.lows;
+  const last = candles.at(-1), prev = candles.at(-2);
+  const lastHigh = highs.at(-1), lastLow = lows.at(-1);
+  // BOS is strongest evidence; otherwise use the most recent sequence of swings.
+  if (lastHigh && last.close > lastHigh.price && prev.close <= lastHigh.price) return { direction:'BUY', event:'BOS_UP', pivots };
+  if (lastLow && last.close < lastLow.price && prev.close >= lastLow.price) return { direction:'SELL', event:'BOS_DOWN', pivots };
+  if (highs.length >= 2 && lows.length >= 2) {
+    const hh = highs.at(-1).price > highs.at(-2).price;
+    const hl = lows.at(-1).price > lows.at(-2).price;
+    const lh = highs.at(-1).price < highs.at(-2).price;
+    const ll = lows.at(-1).price < lows.at(-2).price;
+    if (hh && hl) return { direction:'BUY', event:'HH_HL', pivots };
+    if (lh && ll) return { direction:'SELL', event:'LH_LL', pivots };
+  }
+  return { direction:null, event:'NEUTRAL', pivots };
+}
+
+function smcLiquiditySweep(candles, lookback = 20) {
+  if (!candles || candles.length < lookback + 3) return null;
+  const recent = candles.slice(-(lookback + 3), -2);
+  const swept = candles.at(-2); // last completed M5 context candle before current
+  const hi = Math.max(...recent.map(c=>c.high)), lo = Math.min(...recent.map(c=>c.low));
+  if (swept.low < lo && swept.close > lo) return { direction:'BUY', level:lo, candle:swept, type:'SELL_SIDE_LIQUIDITY' };
+  if (swept.high > hi && swept.close < hi) return { direction:'SELL', level:hi, candle:swept, type:'BUY_SIDE_LIQUIDITY' };
+  // Allow a sweep from one of the previous three closed candles so the M1 confirmation can form.
+  const window = candles.slice(-5, -1);
+  for (let k=window.length-1; k>=0; k--) {
+    const c=window[k], prior=candles.slice(Math.max(0, candles.length-5-lookback+k), candles.length-5+k);
+    if (prior.length < 8) continue;
+    const ph=Math.max(...prior.map(x=>x.high)), pl=Math.min(...prior.map(x=>x.low));
+    if (c.low < pl && c.close > pl) return { direction:'BUY', level:pl, candle:c, type:'SELL_SIDE_LIQUIDITY' };
+    if (c.high > ph && c.close < ph) return { direction:'SELL', level:ph, candle:c, type:'BUY_SIDE_LIQUIDITY' };
+  }
+  return null;
+}
+
+function smcFVG(candles, direction) {
+  if (!candles || candles.length < 5) return null;
+  // Search recent completed three-candle imbalances. A gap remains relevant for a short window.
+  for (let i=candles.length-2; i>=Math.max(2,candles.length-10); i--) {
+    const a=candles[i-2], c=candles[i];
+    if (direction==='BUY' && a.high < c.low) return { low:a.high, high:c.low, epoch:c.epoch, type:'BULLISH_FVG' };
+    if (direction==='SELL' && a.low > c.high) return { low:c.high, high:a.low, epoch:c.epoch, type:'BEARISH_FVG' };
+  }
+  return null;
+}
+
+function smcOrderBlock(candles, direction, atrValue) {
+  if (!candles || candles.length < 8) return null;
+  // Last opposing candle before a directional displacement is used as the order block.
+  for (let i=candles.length-3; i>=Math.max(0,candles.length-12); i--) {
+    const c=candles[i], after=candles.slice(i+1, Math.min(candles.length, i+4));
+    if (!after.length) continue;
+    const move = direction==='BUY' ? Math.max(...after.map(x=>x.high))-c.close : c.close-Math.min(...after.map(x=>x.low));
+    const opposing = direction==='BUY' ? c.close<c.open : c.close>c.open;
+    if (opposing && move >= atrValue*0.7) return { low:c.low, high:c.high, epoch:c.epoch, type:direction==='BUY'?'BULLISH_OB':'BEARISH_OB' };
+  }
+  return null;
+}
+
+function smcMicroMSS(candles, direction) {
+  if (!candles || candles.length < 8) return null;
+  const last=candles.at(-1), ref=candles.slice(-7,-1);
+  if (direction==='BUY') {
+    const level=Math.max(...ref.map(c=>c.high));
+    return last.close > level ? { level, type:'MSS_UP' } : null;
+  }
+  const level=Math.min(...ref.map(c=>c.low));
+  return last.close < level ? { level, type:'MSS_DOWN' } : null;
+}
+
 function findApexSetup(sym, storeOverride = null, stateOverride = null) {
-  // APEX FLOW v4 — trend-aligned pullback + continuation model.
-  // It deliberately offers two entry paths (deep pullback or shallow continuation)
-  // while keeping the higher-timeframe trend and a closed-candle confirmation mandatory.
   if (!APEX_CONFIG.strategy.enabled) return null;
   const symbol = SYM[sym].label;
   const config = APEX_CONFIG.symbols[symbol];
   if (!config?.enabled) return null;
   const store = storeOverride || SYM;
   const state = stateOverride || APEX_STATE;
-  const m15Raw = store[sym].candles[900], m5Raw = store[sym].candles[300], m1Raw = store[sym].candles[60];
+  const m15Raw=store[sym].candles[900], m5Raw=store[sym].candles[300], m1Raw=store[sym].candles[60];
   if (!m15Raw || !m5Raw || !m1Raw) return null;
-  const m15 = apexGetValidCandles(m15Raw.slice(0, -1));
-  const m5 = apexGetValidCandles(m5Raw.slice(0, -1));
-  const m1 = apexGetValidCandles(m1Raw.slice(0, -1));
-  if (m15.length < 55 || m5.length < 30 || m1.length < 8) return null;
+  const m15=apexGetValidCandles(m15Raw.slice(0,-1));
+  const m5=apexGetValidCandles(m5Raw.slice(0,-1));
+  const m1=apexGetValidCandles(m1Raw.slice(0,-1));
+  if (m15.length<40 || m5.length<28 || m1.length<12) return null;
 
-  const latestM1 = m1.at(-1), timestamp = apexGetCandleTimestamp(latestM1);
-  state.lastSignalBySymbol = state.lastSignalBySymbol || {};
-  if (APEX_CONFIG.strategy.oneSignalPerBar && timestamp !== null && state.lastSignalBySymbol[symbol] === timestamp) return null;
+  const latest=m1.at(-1), timestamp=apexGetCandleTimestamp(latest);
+  state.lastSignalBySymbol=state.lastSignalBySymbol||{};
+  if (APEX_CONFIG.strategy.oneSignalPerBar && timestamp!==null && state.lastSignalBySymbol[symbol]===timestamp) return null;
 
-  const m15Close = m15.map(c => c.close), e20 = ema(m15Close, 20), e50 = ema(m15Close, 50);
-  const m5Close = m5.map(c => c.close), e5 = ema(m5Close, 20);
-  if (!e20 || !e50 || !e5) return null;
-  const e20Now = e20.at(-1), e50Now = e50.at(-1), e20Prev = e20.at(-4) ?? e20Now;
-  const direction = e20Now > e50Now && e20Now >= e20Prev ? 'BUY' : e20Now < e50Now && e20Now <= e20Prev ? 'SELL' : null;
+  const htf=smcStructureBias(m15), itf=smcStructureBias(m5);
+  const sweep=smcLiquiditySweep(m5, 18);
+  // Prefer HTF direction, but a fresh M5 BOS may establish a new intraday leg after a liquidity event.
+  let direction=htf.direction || itf.direction || (sweep && sweep.direction);
   if (!direction) return null;
+  if (sweep && sweep.direction!==direction) return null;
 
-  const vol = apexCalculateVolatilityState(m15);
-  if (APEX_CONFIG.strategy.useVolatilityFilter && vol.state === 'EXTREME') return null;
-  const atr5 = apexCalculateATR(m5), atr1 = apexCalculateATR(m1);
+  const atr5=apexCalculateATR(m5), atr1=apexCalculateATR(m1);
   if (!atr5 || !atr1) return null;
+  const mss=smcMicroMSS(m1, direction);
+  const fvg=smcFVG(m1, direction);
+  const ob=smcOrderBlock(m5, direction, atr5);
+  const price=latest.close;
+  const inFVG=!!(fvg && price>=fvg.low-atr1*0.15 && price<=fvg.high+atr1*0.35);
+  const inOB=!!(ob && price>=ob.low-atr1*0.2 && price<=ob.high+atr1*0.4);
 
-  // Recent M5 directional leg. A modest threshold admits ordinary intraday waves
-  // instead of waiting only for unusually large impulses.
-  const recent = m5.slice(-8), expansion = recent.slice(-5);
-  const move = expansion.at(-1).close - expansion[0].open;
-  const directionalBars = expansion.filter(c => direction === 'BUY' ? c.close > c.open : c.close < c.open).length;
-  const alignedMove = direction === 'BUY' ? move : -move;
-  const momentum = alignedMove / atr5;
-  if (momentum < 0.35 && directionalBars < 3) return null;
+  // ICT-style entry: structure/liquidity narrative + a displacement/MSS.
+  // A FVG or OB improves quality but is not mandatory when the MSS is strong,
+  // allowing the engine to participate in more valid intraday continuations.
+  if (!mss && !sweep) return null;
+  if (!mss && !(inFVG || inOB)) return null;
 
-  const impulseHigh = Math.max(...expansion.map(c=>c.high)), impulseLow = Math.min(...expansion.map(c=>c.low));
-  const range = impulseHigh - impulseLow;
-  if (!(range > 0)) return null;
-  const deepZone = direction === 'BUY'
-    ? { high: impulseHigh - range * 0.30, low: impulseHigh - range * 0.72 }
-    : { low: impulseLow + range * 0.30, high: impulseLow + range * 0.72 };
-  const price = latestM1.close;
-  const inDeepZone = apexPriceInsideZone(price, deepZone, atr5 * 0.10);
-  const m5Ema = e5.at(-1);
-  const nearTrendMean = Math.abs(price - m5Ema) <= atr5 * 0.45;
-  const shallowContinuation = APEX_CONFIG.strategy.allowContinuation && nearTrendMean;
-  if (!inDeepZone && !shallowContinuation) return null;
+  const body=Math.abs(latest.close-latest.open), range=latest.high-latest.low;
+  const displacement=range>0 && body/range>=0.48 && body>=atr1*0.45;
+  if (mss && !displacement && !(inFVG || inOB)) return null;
 
-  // Closed M1 confirmation: reversal reaction OR a break of the prior micro structure.
-  const prev = m1.at(-2), body = Math.abs(latestM1.close-latestM1.open), m1Range = latestM1.high-latestM1.low;
-  if (!prev || !(m1Range > 0) || body/m1Range < 0.32) return null;
-  const closeLocation = (latestM1.close-latestM1.low)/m1Range;
-  const reaction = direction === 'BUY'
-    ? latestM1.close > latestM1.open && closeLocation >= 0.55 && latestM1.close >= prev.close
-    : latestM1.close < latestM1.open && closeLocation <= 0.45 && latestM1.close <= prev.close;
-  const microWindow = m1.slice(-5,-1);
-  const microBreak = direction === 'BUY'
-    ? latestM1.close > Math.max(...microWindow.map(c=>c.high))
-    : latestM1.close < Math.min(...microWindow.map(c=>c.low));
-  if (!reaction && !microBreak) return null;
+  let zone = inFVG ? fvg : (inOB ? ob : null);
+  const swingRef=m1.slice(-10,-1);
+  const structuralSL = direction==='BUY'
+    ? Math.min(...swingRef.map(c=>c.low), sweep?.candle?.low ?? Infinity)
+    : Math.max(...swingRef.map(c=>c.high), sweep?.candle?.high ?? -Infinity);
+  const buffer=Math.max(atr1*0.25, atr5*0.04);
+  const stopLoss=direction==='BUY' ? structuralSL-buffer : structuralSL+buffer;
+  const riskDistance=Math.abs(price-stopLoss);
+  if (!(riskDistance>atr1*0.45 && riskDistance<atr5*2.8)) return null;
+  const takeProfit=direction==='BUY' ? price+riskDistance*1.8 : price-riskDistance*1.8;
 
-  // Avoid entering after a stretched move away from the M5 mean.
-  const extension = Math.abs(price - m5Ema) / atr5;
-  if (APEX_CONFIG.filters.avoidChasing && extension > 1.15) return null;
+  let score=0;
+  if (htf.direction===direction) score+=28;
+  else if (itf.direction===direction) score+=18;
+  if (sweep && sweep.direction===direction) score+=24;
+  if (mss) score+=22;
+  if (inFVG) score+=13;
+  if (inOB) score+=10;
+  if (displacement) score+=8;
+  score=Math.min(100,score);
+  // Preserve the user's configured minimum score as the final gate in btSafetyGate.
+  if (score<45) return null;
 
-  const zone = inDeepZone ? deepZone : (direction === 'BUY'
-    ? { low: Math.min(m5Ema, price) - atr5*0.25, high: Math.max(m5Ema, price) + atr5*0.05 }
-    : { low: Math.min(m5Ema, price) - atr5*0.05, high: Math.max(m5Ema, price) + atr5*0.25 });
-  const stopLoss = direction === 'BUY'
-    ? Math.min(zone.low, latestM1.low) - Math.max(atr1*0.35, atr5*0.10)
-    : Math.max(zone.high, latestM1.high) + Math.max(atr1*0.35, atr5*0.10);
-  const riskDistance = Math.abs(price-stopLoss);
-  if (!(riskDistance > atr1*0.6)) return null;
-  const takeProfit = direction === 'BUY' ? price + riskDistance*1.5 : price - riskDistance*1.5;
-
-  let score = 0;
-  score += 28; // HTF trend is mandatory
-  if (momentum >= 0.65) score += 16; else if (directionalBars >= 4) score += 12; else score += 8;
-  if (inDeepZone) score += 18; else if (shallowContinuation) score += 13;
-  if (reaction) score += 18; else if (microBreak) score += 14;
-  if (vol.state === 'NORMAL') score += 7; else if (vol.state === 'HIGH') score += 3;
-  if (extension <= 0.55) score += 5;
-  score = Math.min(100, score);
-  if (score < Number(APEX_CONFIG.strategy.minimumSetupScore)) return null;
-
-  const setup = { symbol: sym, direction, entry: price, stopLoss, takeProfit,
-    riskDistance, rewardDistance: Math.abs(takeProfit-price), rr: 1.5, score,
-    pressureZone: zone, reaction: reaction ? 'REACTION' : 'MICRO_BREAK',
-    setupType: inDeepZone ? 'PULLBACK' : 'CONTINUATION', volatility: vol,
-    timestamp: timestamp ?? Date.now(), strategy: 'APEX FLOW v4' };
-  state.lastSignalBySymbol[symbol] = setup.timestamp;
+  const setup={ symbol:sym, direction, entry:price, stopLoss, takeProfit, riskDistance,
+    rewardDistance:Math.abs(takeProfit-price), rr:1.8, score,
+    pressureZone:zone || {low:Math.min(price,stopLoss),high:Math.max(price,stopLoss)},
+    reaction:mss ? mss.type : 'LIQUIDITY_REACTION',
+    setupType: sweep ? (inFVG?'SMC_SWEEP_FVG':inOB?'SMC_SWEEP_OB':'SMC_SWEEP_MSS') : (inFVG?'SMC_FVG_MSS':'SMC_OB_MSS'),
+    volatility:apexCalculateVolatilityState(m15), timestamp:timestamp ?? Date.now(), strategy:'SMC ICT' };
+  state.lastSignalBySymbol[symbol]=setup.timestamp;
   return setup;
 }
+
 function apexCalculateStopLoss(direction, candles, zone, config = {}) {
   const a = apexCalculateATR(candles), latest = apexGetLatestClosedCandle(candles);
   if (!a || !latest) return null;
@@ -3668,7 +3741,7 @@ function cancelBacktest(){
    LIVE ON-CHART REPLAY LOOP
    ------------------------------------------------------------
    Runs the exact same per-bar logic as the old synchronous loop
-   (btAppendM1 → btManagePositions → computeScore → equity/DD/
+   (btAppendM1 → btManagePositions → APEX setup detection → equity/DD/
    target checks → btMaybeEnter) but paced with setTimeout instead
    of run start-to-finish, yielding to the browser after every
    batch so the main chart and dashboard repaint mid-computation.
@@ -3682,6 +3755,9 @@ function btRunLiveLoop(timeline, acc, store, cfg, symbols, startEpoch, endEpoch)
   return new Promise((resolve, reject) => {
     btLiveCtl = { paused:false, cancelled:false, speed:1, idx:0 };
     const total = timeline.length;
+    // Backtest signal state must be local to this replay. The live APEX state
+    // cannot be referenced here because it belongs to the real-time engine.
+    const btApexState = { lastSignalBySymbol: {} };
     let lastAnalysis = {};
     let targetAnnounced = false;
 
@@ -3715,7 +3791,15 @@ function btRunLiveLoop(timeline, acc, store, cfg, symbols, startEpoch, endEpoch)
         btAppendM1(store, sym, bar);
         btManagePositions(acc, sym, bar, cfg);
         const setup = findApexSetup(sym, store, btApexState);
-        lastAnalysis[sym] = analysis;
+        // Keep the replay dashboard independent from the live ANALYSIS object.
+        // A setup is enough to report current direction/quality without leaking
+        // real-time state into historical testing.
+        lastAnalysis[sym] = setup ? {
+          ready: true,
+          direction: setup.direction === 'BUY' ? 'bullish' : 'bearish',
+          score: setup.score,
+          regime: null
+        } : null;
         const equity = btEquity(acc, (s) => store[s].price);
         acc.peakEquity = Math.max(acc.peakEquity, equity);
         const dd = acc.peakEquity > 0 ? (acc.peakEquity - equity) / acc.peakEquity * 100 : 0;
