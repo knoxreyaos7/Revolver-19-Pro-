@@ -1966,6 +1966,7 @@ function loadAccount(){
     dailyStartBalance: saved && typeof saved.dailyStartBalance === 'number' ? saved.dailyStartBalance : cfg.startingBalance,
     dailyDate: saved && saved.dailyDate ? saved.dailyDate : utcDateStr(),
     lossStreak: saved && typeof saved.lossStreak === 'number' ? saved.lossStreak : 0,
+    lastLossAt: saved && typeof saved.lastLossAt === 'number' ? saved.lastLossAt : 0,
     cooldownUntil: saved && typeof saved.cooldownUntil === 'number' ? saved.cooldownUntil : 0,
     openPositions: saved && Array.isArray(saved.openPositions) ? saved.openPositions : [],
     closedTrades: saved && Array.isArray(saved.closedTrades) ? saved.closedTrades : [],
@@ -2105,9 +2106,398 @@ function safetyGate(sym){
   checks.push({ label: 'Regime is not volatile/choppy', ok: !!(analysis && analysis.ready && analysis.regime.label !== 'volatile') });
   checks.push({ label: 'Not in post-loss-streak cooldown', ok: Date.now() >= ACCOUNT.cooldownUntil });
   checks.push({ label: 'Setup Quality Score ≥ 65 with a clear direction', ok: !!(analysis && analysis.ready && analysis.score >= 65 && analysis.direction) });
+  apexSyncState();
+  checks.push({ label: 'APEX max open trades not reached', ok: ACCOUNT.openPositions.length < APEX_CONFIG.risk.maxOpenTrades });
+  checks.push({ label: 'APEX max drawdown not breached', ok: apexCalculateCurrentDrawdown() < APEX_CONFIG.risk.maxDrawdown });
+  checks.push({ label: 'APEX trading session active', ok: apexGetSessionStatus().allowed });
 
   const passed = checks.every(c => c.ok);
   return { passed, checks };
+}
+
+/* ============================================================
+   APEX STRATEGY ENGINE (v3)
+   ------------------------------------------------------------
+   Multi-timeframe setup detector (H1 bias -> M15 impulse ->
+   M5 pullback + rejection), candle validation, session
+   filtering, volatility-state filtering, one-signal-per-bar
+   dedup, and risk sizing — ported in full from the supplied
+   APEX module. Everything through riskCheck()/apexCalculate-
+   CurrentDrawdown() below is a direct port of what was
+   provided; nothing past that point (execution/management) was
+   supplied for this version, so — as with v1 — entries still
+   flow through the terminal's own ACCOUNT pipeline
+   (maybeEnterTrade/managePositions) rather than a duplicated
+   execution engine. See the note above managePositions() for
+   what that means for TP1/TP2/trailing.
+   ============================================================ */
+const APEX_CONFIG = {
+  symbols: {
+    XAUUSD: { enabled: true, pipSize: 0.01, minImpulseATR: 1.2, pullbackMin: 0.382, pullbackMax: 0.618, maxSpreadPips: 35, minATR: 0.5, maxATR: 3 },
+    BTCUSD: { enabled: true, pipSize: 0.01, minImpulseATR: 1.2, pullbackMin: 0.382, pullbackMax: 0.618, maxSpreadPips: 250, minATR: 0.5, maxATR: 3 }
+  },
+  timeframes: { bias: "H1", setup: "M15", entry: "M5" },
+  strategy: { enabled: true, minimumSetupScore: 75, useTrendFilter: true, useImpulseFilter: true, usePullbackZone: true, useRejectionConfirmation: true, useVolumeFilter: false, useVolatilityFilter: true, allowContinuation: true, allowReversal: false, requireClosedCandle: true, oneSignalPerBar: true, minimumStructureStrength: 60, minimumImpulseStrength: 1.2 },
+  risk: { enabled: true, riskPerTrade: 0.5, maxRiskPerTrade: 1, dailyRiskLimit: 2, maxDrawdown: 10, maxOpenTrades: 3, maxTradesPerDay: 6, maxConsecutiveLosses: 3, cooldownMinutes: 45, lossRiskReductionEnabled: true, lossRiskMultiplier: 0.65, maxSymbolExposure: 1, maxCorrelatedExposure: 1, reserveMarginPercent: 20, rejectIfMinimumLotExceedsRisk: true },
+  growth: { enabled: true, compoundFromEquity: true, aggressiveGrowth: false, aggressiveRiskMultiplier: 1, profitProtectionEnabled: true, profitProtectionDrawdown: 4, profitLockThreshold: 5, profitLockRiskMultiplier: 0.5 },
+  lots: { minimumLotSize: 0.01, maximumLotSize: 100, lotStep: 0.01 },
+  leverage: { value: 100 },
+  stopLoss: { method: "STRUCTURE", structureBufferATR: 0.2, minimumATR: 0.5, maximumATR: 3, minimumDistancePips: 1 },
+  takeProfit: { enabled: true, tp1RR: 1.25, tp1ClosePercent: 30, tp2RR: 2.25, tp2ClosePercent: 40, runnerPercent: 30, breakEvenAtR: 1.1, breakEvenOffsetATR: 0.05, trailingEnabled: true, trailingStartR: 1.75, trailingATRMultiplier: 1.5, minimumFinalRR: 2 },
+  filters: { maxSpread: null, minimumRR: 2, avoidExtremeVolatility: true, extremeVolatilityATRMultiplier: 3, avoidChasing: true, maximumExtensionATR: 1.75, minimumCandleBodyRatio: 0.35, maximumEntryDistanceATR: 0.35, requireFreshSignal: true },
+  sessions: { enabled: true, london: true, newYork: true, asia: false, start: "07:00", end: "21:00", avoidSessionMinutesBeforeClose: 15 },
+  execution: { slippagePips: 0, maxSlippagePips: 5, rejectDuplicateSignals: true, rejectOppositePositions: true }
+};
+
+// APEX's own bookkeeping mirror. It does not hold the account of record —
+// ACCOUNT (existing paper-trading store above) is — apexSyncState() below
+// refreshes these fields from ACCOUNT immediately before every setup/risk
+// evaluation, so riskCheck()/calculateRiskAmount() see live numbers without
+// a second, divergent ledger.
+const APEX_STATE = {
+  accountBalance: 0, equity: 0, equityHighWaterMark: 0, dailyPnL: 0, dailyRiskUsed: 0,
+  openTrades: [], closedTrades: [], tradesToday: 0, consecutiveWins: 0, consecutiveLosses: 0,
+  lastLossTime: 0, lastTradeTime: 0, lastSignalBySymbol: {}, currentTradingDay: null,
+  symbols: {}, running: false
+};
+
+function apexNormalizeCandle(candle) {
+  if (!candle) return null;
+  const open = Number(candle.open), high = Number(candle.high), low = Number(candle.low), close = Number(candle.close);
+  if (![open, high, low, close].every(Number.isFinite) || high < Math.max(open, close) || low > Math.min(open, close)) return null;
+  return { ...candle, open, high, low, close, volume: Number.isFinite(Number(candle.volume)) ? Number(candle.volume) : null };
+}
+function apexGetValidCandles(candles) {
+  return Array.isArray(candles) ? candles.map(apexNormalizeCandle).filter(Boolean) : [];
+}
+function apexGetCandleTimestamp(candle) {
+  return candle?.epoch ?? candle?.timestamp ?? candle?.time ?? null;
+}
+function apexGetLatestClosedCandle(candles) {
+  const valid = apexGetValidCandles(candles);
+  return valid.length ? valid.at(-1) : null;
+}
+
+function apexDetectSwingPoints(candles, lookback = 3) {
+  const highs = [], lows = [];
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const candle = candles[i];
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= lookback; j++) {
+      if (candle.high <= candles[i - j].high || candle.high <= candles[i + j].high) isHigh = false;
+      if (candle.low >= candles[i - j].low || candle.low >= candles[i + j].low) isLow = false;
+    }
+    if (isHigh) highs.push({ index: i, price: candle.high });
+    if (isLow) lows.push({ index: i, price: candle.low });
+  }
+  return { highs, lows };
+}
+
+function apexCalculateStructureStrength(candles, direction, highs = [], lows = []) {
+  const recent = candles.slice(-20);
+  if (recent.length < 10) return 0;
+  const directional = recent.filter(c => direction === "BUY" ? c.close > c.open : c.close < c.open).length;
+  const [latestHigh, previousHigh] = highs.slice(-2);
+  const [latestLow, previousLow] = lows.slice(-2);
+  let quality = 0;
+  if (direction === "BUY") {
+    if (latestHigh?.price > previousHigh?.price) quality += 25;
+    if (latestLow?.price > previousLow?.price) quality += 25;
+  } else {
+    if (latestHigh?.price < previousHigh?.price) quality += 25;
+    if (latestLow?.price < previousLow?.price) quality += 25;
+  }
+  return Math.min(100, directional / recent.length * 50 + quality);
+}
+
+function apexDetectMarketStructure(candles) {
+  const valid = apexGetValidCandles(candles);
+  if (valid.length < 30) return { direction: "NEUTRAL", strength: 0, highs: [], lows: [] };
+  const { highs, lows } = apexDetectSwingPoints(valid, 3);
+  if (highs.length < 2 || lows.length < 2) return { direction: "NEUTRAL", strength: 0, highs, lows };
+  const [lastHigh, previousHigh] = highs.slice(-2);
+  const [lastLow, previousLow] = lows.slice(-2);
+  const bullish = lastHigh.price > previousHigh.price && lastLow.price > previousLow.price;
+  const bearish = lastHigh.price < previousHigh.price && lastLow.price < previousLow.price;
+  if (bullish) return { direction: "BULLISH", strength: apexCalculateStructureStrength(valid, "BUY", highs, lows), highs, lows };
+  if (bearish) return { direction: "BEARISH", strength: apexCalculateStructureStrength(valid, "SELL", highs, lows), highs, lows };
+  return { direction: "NEUTRAL", strength: 0, highs, lows };
+}
+
+function apexCalculateTrueRange(candle, previousCandle) {
+  if (!candle) return 0;
+  const previousClose = previousCandle?.close ?? candle.close;
+  return Math.max(candle.high - candle.low, Math.abs(candle.high - previousClose), Math.abs(candle.low - previousClose));
+}
+function apexCalculateATR(candles, period = 14) {
+  const valid = apexGetValidCandles(candles);
+  if (valid.length <= period) return null;
+  const ranges = valid.slice(-period).map((c, i) => apexCalculateTrueRange(c, valid[valid.length - period + i - 1]));
+  const a = ranges.reduce((x, y) => x + y, 0) / ranges.length;
+  return Number.isFinite(a) && a > 0 ? a : null;
+}
+function apexCalculateAverageRange(candles, period = 20) {
+  const valid = apexGetValidCandles(candles).slice(-period);
+  if (!valid.length) return null;
+  const average = valid.reduce((total, c) => total + c.high - c.low, 0) / valid.length;
+  return Number.isFinite(average) && average > 0 ? average : null;
+}
+function apexCalculateVolatilityState(candles) {
+  const a = apexCalculateATR(candles), averageRange = apexCalculateAverageRange(candles);
+  if (!a || !averageRange) return { atr: null, ratio: null, state: "UNKNOWN" };
+  const ratio = a / averageRange;
+  return { atr: a, ratio, state: ratio >= APEX_CONFIG.filters.extremeVolatilityATRMultiplier ? "EXTREME" : ratio >= 1.5 ? "HIGH" : ratio <= 0.7 ? "LOW" : "NORMAL" };
+}
+
+function apexDetectImpulse(candles, direction, config) {
+  const valid = apexGetValidCandles(candles), a = apexCalculateATR(valid);
+  if (!a || valid.length < 6) return null;
+  const recent = valid.slice(-6), startPrice = recent[0].open, endPrice = recent.at(-1).close;
+  const movement = Math.abs(endPrice - startPrice), strength = movement / a;
+  const directional = recent.filter(c => direction === "BUY" ? c.close > c.open : c.close < c.open).length;
+  const bodyRatio = recent.reduce((t, c) => t + (c.high > c.low ? Math.abs(c.close - c.open) / (c.high - c.low) : 0), 0) / recent.length;
+  if (strength < Number(config.minImpulseATR) || (direction === "BUY" ? endPrice <= startPrice : endPrice >= startPrice) || directional < 3 || bodyRatio < APEX_CONFIG.filters.minimumCandleBodyRatio) return null;
+  return { direction, startPrice, endPrice, range: movement, atr: a, strength, directionalCandles: directional, averageBodyRatio: bodyRatio, high: Math.max(...recent.map(c => c.high)), low: Math.min(...recent.map(c => c.low)) };
+}
+
+function apexCalculatePullbackZone(impulse, config) {
+  if (!impulse || impulse.range <= 0) return null;
+  const min = Number(config.pullbackMin), max = Number(config.pullbackMax), range = impulse.high - impulse.low;
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0 || max <= min) return null;
+  return impulse.direction === "BUY"
+    ? { high: impulse.high - range * min, low: impulse.high - range * max }
+    : { low: impulse.low + range * min, high: impulse.low + range * max };
+}
+function apexPriceInsideZone(price, zone, tolerance = 0) {
+  return Boolean(zone && Number.isFinite(price) && price >= zone.low - tolerance && price <= zone.high + tolerance);
+}
+
+function apexDetectRejection(candles, direction) {
+  const valid = apexGetValidCandles(candles);
+  if (valid.length < 3) return null;
+  const candle = valid.at(-1), previous = valid.at(-2);
+  const body = Math.abs(candle.close - candle.open), range = candle.high - candle.low;
+  if (range <= 0) return null;
+  const upper = candle.high - Math.max(candle.open, candle.close);
+  const lower = Math.min(candle.open, candle.close) - candle.low;
+  const bodyRatio = body / range, closeLocation = (candle.close - candle.low) / range;
+  if (bodyRatio < APEX_CONFIG.filters.minimumCandleBodyRatio) return null;
+  const validRejection = direction === "BUY"
+    ? lower >= body * 1.1 && candle.close > candle.open && closeLocation >= 0.6 && candle.close >= previous.close
+    : upper >= body * 1.1 && candle.close < candle.open && closeLocation <= 0.4 && candle.close <= previous.close;
+  return validRejection ? { direction, candle, bodyRatio, wickRatio: (direction === "BUY" ? lower : upper) / range } : null;
+}
+
+function apexCalculateSetupScore(data) {
+  let score = 0;
+  if (data.bias === data.direction) score += 25;
+  if (data.structureStrength >= APEX_CONFIG.strategy.minimumStructureStrength) score += 20;
+  if (data.impulseStrength >= APEX_CONFIG.strategy.minimumImpulseStrength) score += 20;
+  if (data.inPullback) score += 15;
+  if (data.rejection) score += 15;
+  if (data.rr >= APEX_CONFIG.filters.minimumRR) score += 5;
+  if (data.volatilityState === "NORMAL") score += 5;
+  if (data.volatilityState === "HIGH") score -= 5;
+  if (data.entryQuality === "EXTENDED") score -= 15;
+  return Math.max(0, Math.min(100, score));
+}
+
+function apexParseTimeToMinutes(value) {
+  if (typeof value !== "string") return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  return Number.isInteger(hours) && Number.isInteger(minutes) && hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 ? hours * 60 + minutes : null;
+}
+function apexGetSessionStatus(timestamp = Date.now()) {
+  if (!APEX_CONFIG.sessions.enabled) return { allowed: true, session: "ALL_DAY" };
+  const date = new Date(timestamp), minutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+  const start = apexParseTimeToMinutes(APEX_CONFIG.sessions.start), end = apexParseTimeToMinutes(APEX_CONFIG.sessions.end);
+  if (start === null || end === null) return { allowed: false, session: "INVALID_SESSION" };
+  const inWindow = start <= end ? minutes >= start && minutes <= end : minutes >= start || minutes <= end;
+  if (!inWindow) return { allowed: false, session: "OUTSIDE_SESSION" };
+  const minutesToEnd = start <= end ? end - minutes : minutes <= end ? end - minutes : 1440 - minutes + end;
+  return minutesToEnd <= Number(APEX_CONFIG.sessions.avoidSessionMinutesBeforeClose) ? { allowed: false, session: "SESSION_CLOSING" } : { allowed: true, session: "ACTIVE" };
+}
+
+function apexGetCurrentTradingDay(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+function apexResetDailyStateIfNeeded(timestamp = Date.now()) {
+  const day = apexGetCurrentTradingDay(timestamp);
+  if (APEX_STATE.currentTradingDay === day) return;
+  APEX_STATE.currentTradingDay = day;
+  APEX_STATE.dailyPnL = APEX_STATE.dailyRiskUsed = APEX_STATE.tradesToday = 0;
+}
+
+// The live feeds here only stream M1/M5/M15 — there's no H1 feed — so
+// APEX's H1 bias timeframe is synthesized by grouping every 4 M15 bars
+// into one H1 bar, rather than fetched directly.
+function apexBuildH1(m15) {
+  if (!m15 || m15.length < 8) return [];
+  const out = [];
+  for (let i = 0; i + 4 <= m15.length; i += 4) {
+    const chunk = m15.slice(i, i + 4);
+    out.push({ epoch: chunk[0].epoch, open: chunk[0].open, close: chunk[chunk.length - 1].close, high: Math.max(...chunk.map(c => c.high)), low: Math.min(...chunk.map(c => c.low)) });
+  }
+  return out;
+}
+
+// Runs the full APEX H1->M15->M5 setup detector for `sym` ('XAU' | 'BTC')
+// against the terminal's live candle stores. `symbol` inside APEX_CONFIG is
+// keyed by SYM[sym].label ('XAUUSD' / 'BTCUSD').
+function findApexSetup(sym) {
+  if (!APEX_CONFIG.strategy.enabled) return null;
+  const symbol = SYM[sym].label;
+  const config = APEX_CONFIG.symbols[symbol];
+  if (!config?.enabled) return null;
+
+  const m15Raw = SYM[sym].candles[900], m5Raw = SYM[sym].candles[300];
+  if (!m15Raw || !m5Raw) return null;
+  const m15 = apexGetValidCandles(m15Raw.slice(0, -1)); // exclude still-forming bar
+  const m5 = apexGetValidCandles(m5Raw.slice(0, -1));
+  const h1 = apexGetValidCandles(apexBuildH1(m15Raw.slice(0, -1)));
+  if ([h1, m15, m5].some(c => c.length < 30)) return null;
+
+  const latest = m5.at(-1), timestamp = apexGetCandleTimestamp(latest);
+  if (APEX_CONFIG.strategy.oneSignalPerBar && timestamp !== null && APEX_STATE.lastSignalBySymbol[symbol] === timestamp) return null;
+
+  const h1Structure = apexDetectMarketStructure(h1), m15Structure = apexDetectMarketStructure(m15), volatility = apexCalculateVolatilityState(m15);
+  if (APEX_CONFIG.strategy.useVolatilityFilter && volatility.state === "EXTREME") return null;
+
+  const direction = h1Structure.direction === "BULLISH" && m15Structure.direction !== "BEARISH"
+    ? "BUY"
+    : h1Structure.direction === "BEARISH" && m15Structure.direction !== "BULLISH" ? "SELL" : "NEUTRAL";
+  if (direction === "NEUTRAL") return null;
+
+  const impulse = apexDetectImpulse(m15, direction, config);
+  if (!impulse) return null;
+
+  const zone = apexCalculatePullbackZone(impulse, config), price = latest.close, a = apexCalculateATR(m5);
+  if (!a) return null;
+
+  const inPullback = apexPriceInsideZone(price, zone, a * 0.05);
+  if (APEX_CONFIG.strategy.usePullbackZone && !inPullback) return null;
+
+  const rejection = apexDetectRejection(m5, direction);
+  if (APEX_CONFIG.strategy.useRejectionConfirmation && !rejection) return null;
+
+  const extension = zone ? (direction === "BUY" ? Math.max(0, price - zone.high) : Math.max(0, zone.low - price)) / a : 0;
+  const entryQuality = extension > APEX_CONFIG.filters.maximumEntryDistanceATR ? "EXTENDED" : "VALID";
+  if (APEX_CONFIG.filters.avoidChasing && entryQuality === "EXTENDED") return null;
+
+  const stopLoss = apexCalculateStopLoss(direction, m5, zone, config);
+  if (!Number.isFinite(stopLoss)) return null;
+
+  const riskDistance = Math.abs(price - stopLoss);
+  if (riskDistance <= 0 || riskDistance < a * 0.25) return null;
+
+  const takeProfit = apexCalculateInitialTarget(direction, price, stopLoss);
+  const rr = Math.abs(takeProfit - price) / riskDistance;
+  const score = apexCalculateSetupScore({ bias: direction, direction, structureStrength: Math.min(h1Structure.strength, m15Structure.strength), impulseStrength: impulse.strength, inPullback, rejection: Boolean(rejection), rr, volatilityState: volatility.state, entryQuality });
+
+  if (score < APEX_CONFIG.strategy.minimumSetupScore || rr < APEX_CONFIG.filters.minimumRR) return null;
+
+  const session = apexGetSessionStatus();
+  if (!session.allowed) return null;
+
+  const setup = { symbol: sym, direction, entry: price, stopLoss, takeProfit, riskDistance, rewardDistance: Math.abs(takeProfit - price), rr, score, impulse, pullbackZone: zone, rejection, volatility, timestamp: timestamp ?? Date.now() };
+  APEX_STATE.lastSignalBySymbol[symbol] = setup.timestamp;
+  return setup;
+}
+
+function apexCalculateStopLoss(direction, candles, zone, config = {}) {
+  const a = apexCalculateATR(candles), latest = apexGetLatestClosedCandle(candles);
+  if (!a || !latest) return null;
+  const buffer = a * Number(APEX_CONFIG.stopLoss.structureBufferATR);
+  const minimum = Number(APEX_CONFIG.stopLoss.minimumDistancePips) * Number(config.pipSize || 0.01);
+  let stop = direction === "BUY" ? (zone?.low ?? latest.low) - buffer : (zone?.high ?? latest.high) + buffer;
+  if (direction === "BUY" && latest.close - stop < minimum) stop = latest.close - minimum;
+  if (direction === "SELL" && stop - latest.close < minimum) stop = latest.close + minimum;
+  return Number.isFinite(stop) ? stop : null;
+}
+function apexCalculateInitialTarget(direction, entry, stop) {
+  const reward = Math.max(APEX_CONFIG.takeProfit.tp1RR, APEX_CONFIG.filters.minimumRR), risk = Math.abs(entry - stop);
+  return direction === "BUY" ? entry + risk * reward : entry - risk * reward;
+}
+
+// Mirrors calculateRiskAmount() from the supplied module: risk-per-trade %
+// scaled by aggressive-growth, profit-protection drawdown throttling,
+// profit-lock, and post-loss-streak reduction, applied against equity.
+function apexCalculateRiskAmount(equity) {
+  if (!Number.isFinite(equity) || equity <= 0) return 0;
+  let risk = Number(APEX_CONFIG.risk.riskPerTrade);
+  if (APEX_CONFIG.growth.enabled && APEX_CONFIG.growth.aggressiveGrowth) risk *= Number(APEX_CONFIG.growth.aggressiveRiskMultiplier);
+  if (APEX_CONFIG.growth.profitProtectionEnabled && APEX_STATE.equityHighWaterMark > 0 && apexCalculateCurrentDrawdown() >= APEX_CONFIG.growth.profitProtectionDrawdown) risk *= 0.5;
+  if (APEX_CONFIG.growth.profitProtectionEnabled && APEX_STATE.dailyPnL > equity * APEX_CONFIG.growth.profitLockThreshold / 100) risk *= APEX_CONFIG.growth.profitLockRiskMultiplier;
+  if (APEX_CONFIG.risk.lossRiskReductionEnabled && APEX_STATE.consecutiveLosses > 0) risk *= Math.pow(APEX_CONFIG.risk.lossRiskMultiplier, APEX_STATE.consecutiveLosses);
+  return equity * Math.min(Math.max(0, risk), Number(APEX_CONFIG.risk.maxRiskPerTrade)) / 100;
+}
+
+// Mirrors calculatePositionSize() from the supplied module. symbolInfo:
+// { valuePerPriceUnit, minimumLotSize, maximumLotSize, lotStep }.
+function apexCalculatePositionSize(symbol, entry, stop, equity, symbolInfo = {}) {
+  const risk = apexCalculateRiskAmount(equity), distance = Math.abs(entry - stop), value = Number(symbolInfo.valuePerPriceUnit);
+  if (distance <= 0 || risk <= 0 || !Number.isFinite(value) || value <= 0) return 0;
+  const min = Number(symbolInfo.minimumLotSize || APEX_CONFIG.lots.minimumLotSize);
+  const max = Number(symbolInfo.maximumLotSize || APEX_CONFIG.lots.maximumLotSize);
+  const step = Number(symbolInfo.lotStep || APEX_CONFIG.lots.lotStep);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(step) || step <= 0 || min > max) return 0;
+  let lots = Math.floor(Math.min(risk / (distance * value), max) / step) * step;
+  if (lots < min) {
+    if (APEX_CONFIG.risk.rejectIfMinimumLotExceedsRisk) return 0;
+    lots = min;
+  }
+  return Number(lots.toFixed(8));
+}
+
+// Mirrors riskCheck() from the supplied module, evaluated against the
+// APEX_STATE mirror that apexSyncState() refreshes from ACCOUNT.
+function apexRiskCheck(sym, setup = null) {
+  apexResetDailyStateIfNeeded();
+  if (!APEX_CONFIG.risk.enabled) return { allowed: true, reason: "Risk engine is disabled." };
+  const symbol = SYM[sym].label;
+  const now = Date.now(), cooldown = Number(APEX_CONFIG.risk.cooldownMinutes) * 60000;
+  const checks = [
+    [!APEX_CONFIG.strategy.enabled, "Strategy is disabled."],
+    [APEX_STATE.openTrades.length >= APEX_CONFIG.risk.maxOpenTrades, "Maximum number of open trades reached."],
+    [APEX_STATE.tradesToday >= APEX_CONFIG.risk.maxTradesPerDay, "Maximum number of daily trades reached."],
+    [APEX_STATE.dailyRiskUsed >= APEX_CONFIG.risk.dailyRiskLimit, "Daily risk limit reached."],
+    [apexCalculateCurrentDrawdown() >= APEX_CONFIG.risk.maxDrawdown, "Maximum drawdown limit reached."],
+    [APEX_STATE.consecutiveLosses >= APEX_CONFIG.risk.maxConsecutiveLosses, "Maximum consecutive losses reached."],
+    [APEX_STATE.lastLossTime > 0 && now - APEX_STATE.lastLossTime < cooldown, "Loss cooldown is active."],
+    [APEX_STATE.openTrades.filter(t => t.symbol === symbol).length >= APEX_CONFIG.risk.maxSymbolExposure, "Maximum symbol exposure reached."],
+    [setup && APEX_STATE.openTrades.some(t => t.symbol === symbol && t.direction !== setup.direction), "Opposite position already exists for this symbol."]
+  ];
+  for (const [blocked, reason] of checks) if (blocked) return { allowed: false, reason };
+  const session = apexGetSessionStatus();
+  return session.allowed ? { allowed: true, reason: "All risk checks passed." } : { allowed: false, reason: `Trading session unavailable: ${session.session}.` };
+}
+
+function apexCalculateCurrentDrawdown() {
+  if (APEX_STATE.equityHighWaterMark <= 0 || !Number.isFinite(APEX_STATE.equity)) return 0;
+  return Math.max(0, (APEX_STATE.equityHighWaterMark - APEX_STATE.equity) / APEX_STATE.equityHighWaterMark * 100);
+}
+
+// Refreshes the APEX_STATE mirror from the terminal's real paper account
+// (ACCOUNT) immediately before every setup/risk evaluation — this is the
+// plumbing that lets apexCalculateRiskAmount()/apexRiskCheck() (both taken
+// verbatim from the supplied module) see live numbers without keeping a
+// second, divergent ledger.
+function apexSyncState() {
+  const day = utcDateStr();
+  const dayOf = ms => new Date(ms).toISOString().slice(0, 10);
+  APEX_STATE.equity = computeEquity();
+  APEX_STATE.accountBalance = ACCOUNT.balance;
+  APEX_STATE.equityHighWaterMark = Math.max(APEX_STATE.equityHighWaterMark || 0, ACCOUNT.peakEquity || 0, APEX_STATE.equity);
+  APEX_STATE.dailyPnL = APEX_STATE.equity - ACCOUNT.dailyStartBalance;
+  APEX_STATE.consecutiveLosses = ACCOUNT.lossStreak;
+  APEX_STATE.lastLossTime = ACCOUNT.lastLossAt || 0;
+  APEX_STATE.openTrades = ACCOUNT.openPositions.map(p => ({ symbol: SYM[p.sym].label, direction: p.dir === 'bullish' ? 'BUY' : 'SELL' }));
+  const openToday = ACCOUNT.openPositions.filter(p => dayOf(p.openedAt) === day);
+  const closedToday = ACCOUNT.closedTrades.filter(t => dayOf(t.openedAt) === day);
+  APEX_STATE.tradesToday = openToday.length + closedToday.length;
+  const riskToday = openToday.reduce((s, p) => s + (p.riskAmount || 0), 0) + closedToday.reduce((s, t) => s + (t.riskAmount || 0), 0);
+  APEX_STATE.dailyRiskUsed = APEX_STATE.equity > 0 ? (riskToday / APEX_STATE.equity) * 100 : 0;
 }
 
 // ---------- Trade lifecycle ----------
@@ -2127,52 +2517,66 @@ function maybeEnterTrade(sym){
   const gate = safetyGate(sym);
   if (!gate.passed) return;
 
-  const analysis = ANALYSIS[sym];
-  const price = SYM[sym].price;
-  const atrVal = getM5Atr(sym);
-  if (price == null || !atrVal) return;
+  // APEX is the authoritative entry signal: H1 structure bias → M15 impulse
+  // → M5 pullback-zone + rejection confirmation, gated further by session
+  // window, volatility state, and one-signal-per-bar dedup inside
+  // findApexSetup(). No setup, no trade.
+  const setup = findApexSetup(sym);
+  if (!setup) return;
 
-  const slDist = atrVal * ACCOUNT.cfg.slAtrMult;
+  apexSyncState();
+  const risk = apexRiskCheck(sym, setup);
+  if (!risk.allowed) {
+    logFeed(`[${SYM[sym].label}] APEX setup found but blocked — ${risk.reason}`, 'risk');
+    return;
+  }
+
+  const dir = setup.direction === 'BUY' ? 'bullish' : 'bearish';
+  const entry = setup.entry;
+  const sl = setup.stopLoss;
+  const tp = setup.takeProfit;
+  const slDist = setup.riskDistance;
   if (!(slDist > 0)) return;
-  const dir = analysis.direction; // 'bullish' | 'bearish'
-  const sign = dir === 'bullish' ? 1 : -1;
-  const entry = price;
-  const sl = entry - sign * slDist;
-  const tp = entry + sign * slDist * ACCOUNT.cfg.rrRatio;
-  const idealRiskAmount = ACCOUNT.balance * (ACCOUNT.cfg.riskPct / 100);
-  const idealUnits = idealRiskAmount / slDist;
 
-  // Clamp the risk-derived size into the user's configured Min/Max Lot Size
-  // (this can only ever shrink the position toward the risk limit or, at
-  // most, size it up to maxLot — it never bypasses the daily-loss/drawdown
-  // hard gates already checked in safetyGate() above).
+  // valuePerPriceUnit = $ change per 1.0 price move per 1 lot — same
+  // per-lot convention (100 for XAU, 1 for BTC) the rest of the terminal
+  // already uses for units/lots conversion.
   const perLot = sym === 'XAU' ? 100 : 1;
-  let lots = idealUnits / perLot;
-  lots = Math.min(ACCOUNT.cfg.maxLot, Math.max(ACCOUNT.cfg.minLot, lots));
+  const lots = apexCalculatePositionSize(sym, entry, sl, APEX_STATE.equity, {
+    valuePerPriceUnit: perLot,
+    minimumLotSize: ACCOUNT.cfg.minLot,
+    maximumLotSize: ACCOUNT.cfg.maxLot,
+    lotStep: APEX_CONFIG.lots.lotStep,
+  });
+  if (!(lots > 0)) return; // below minimum lot for the risk budget, or size() rejected it
+
   const units = lots * perLot;
   const riskAmount = Math.abs(units * slDist);
 
   // Margin check at the configured leverage: never open a position that
-  // would require more margin than is currently free.
+  // would require more margin than is currently free, and hold back
+  // APEX's configured margin reserve on top of that.
   const marginInUse = ACCOUNT.openPositions.reduce((s,p) => s + Math.abs(p.units) * (SYM[p.sym].price || p.entry) / ACCOUNT.cfg.leverage, 0);
   const requiredMargin = units * entry / ACCOUNT.cfg.leverage;
   const freeMargin = computeEquity() - marginInUse;
-  if (requiredMargin > freeMargin) {
-    logFeed(`[${SYM[sym].label}] entry skipped — required margin $${requiredMargin.toFixed(2)} exceeds free margin $${freeMargin.toFixed(2)} at 1:${ACCOUNT.cfg.leverage} leverage`, 'risk');
+  const reserve = computeEquity() * (Number(APEX_CONFIG.risk.reserveMarginPercent) / 100);
+  if (requiredMargin > freeMargin - reserve) {
+    logFeed(`[${SYM[sym].label}] entry skipped — required margin $${requiredMargin.toFixed(2)} exceeds free margin $${freeMargin.toFixed(2)} minus APEX's ${APEX_CONFIG.risk.reserveMarginPercent}% reserve at 1:${ACCOUNT.cfg.leverage} leverage`, 'risk');
     return;
   }
 
   const pos = {
     id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
     sym, dir, entry, sl, tp, units, riskAmount, lots,
-    slDist, rr: ACCOUNT.cfg.rrRatio,
+    slDist, rr: setup.rr,
     openedAt: Date.now(), beMoved: false,
-    scoreAtEntry: analysis.score,
+    scoreAtEntry: setup.score,
+    apexSetup: true,
   };
   ACCOUNT.openPositions.push(pos);
   persistAccount();
   updatePositionUIField(sym, pos);
-  logFeed(`[${SYM[sym].label}] SIM ${dir.toUpperCase()} opened @ ${entry.toFixed(SYM[sym].decimals)} · ${lots.toFixed(2)} lots · SL ${sl.toFixed(SYM[sym].decimals)} · TP ${tp.toFixed(SYM[sym].decimals)} · risk $${riskAmount.toFixed(2)} (score ${analysis.score})`, 'trade');
+  logFeed(`[${SYM[sym].label}] APEX ${dir.toUpperCase()} opened @ ${entry.toFixed(SYM[sym].decimals)} · ${lots.toFixed(2)} lots · SL ${sl.toFixed(SYM[sym].decimals)} · TP ${tp.toFixed(SYM[sym].decimals)} · risk $${riskAmount.toFixed(2)} · RR ${setup.rr.toFixed(2)} (score ${setup.score})`, 'trade');
   renderPositionsDrawer();
   if (activeSymbol === sym) drawChart();
 }
@@ -2202,9 +2606,10 @@ function managePositions(){
       ACCOUNT.closedTrades.unshift({
         sym: p.sym, dir: p.dir, entry: p.entry, exit, pnl, reason,
         closedAt: Date.now(), openedAt: p.openedAt, scoreAtEntry: p.scoreAtEntry,
+        riskAmount: p.riskAmount,
       });
       if (ACCOUNT.closedTrades.length > 100) ACCOUNT.closedTrades.length = 100;
-      if (pnl < 0) ACCOUNT.lossStreak++; else ACCOUNT.lossStreak = 0;
+      if (pnl < 0) { ACCOUNT.lossStreak++; ACCOUNT.lastLossAt = Date.now(); } else ACCOUNT.lossStreak = 0;
       if (ACCOUNT.lossStreak >= 3) {
         ACCOUNT.cooldownUntil = Date.now() + 30 * 60 * 1000; // 30 min simulated cooldown
         logFeed(`[${SYM[p.sym].label}] 3 losses in a row — entries paused 30 min (cooldown)`, 'risk');
