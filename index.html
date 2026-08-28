@@ -68,6 +68,16 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--mono);height:
 .session-chip{padding:1px 6px;border-radius:3px;font-size:7.5px;letter-spacing:.06em;text-transform:uppercase;border:1px solid;flex-shrink:0}
 .session-chip.on{color:#fff}
 
+/* ---------- Master trading-symbol selector (isolates engine + chart) ---------- */
+.symbol-mode-bar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
+.symbol-mode-lbl{font-family:var(--sans);font-size:8.5px;font-weight:700;letter-spacing:.08em;color:var(--text2);text-transform:uppercase;white-space:nowrap;flex-shrink:0}
+.symbol-mode-seg{display:flex;flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:5px;overflow:hidden}
+.symbol-mode-seg button{flex:1;background:none;border:none;color:var(--text2);font-family:var(--sans);font-size:10px;font-weight:700;letter-spacing:.03em;padding:7px 4px;cursor:pointer;transition:all .15s;border-right:1px solid var(--border2)}
+.symbol-mode-seg button:last-child{border-right:none}
+.symbol-mode-seg button.on.xau{background:var(--gold-glow);color:var(--gold)}
+.symbol-mode-seg button.on.btc{background:var(--btc-glow);color:var(--btc)}
+.symbol-mode-seg button.on.both{background:linear-gradient(90deg,var(--gold-glow),var(--btc-glow));color:var(--text)}
+
 /* ---------- Symbol tab strip (drives the chart) ---------- */
 .sym-tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;height:var(--tab-h)}
 .sym-tab{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;font-family:var(--sans);position:relative}
@@ -86,6 +96,8 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--mono);height:
 
 /* ---------- Chart area ---------- */
 .chart-wrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+.chart-wrap.dual .chart-area{flex:1 1 50%}
+.chart-wrap.dual .chart-area.panel-xau{border-bottom:1px solid var(--border2)}
 .chart-area{position:relative;overflow:hidden;background:var(--bg);flex:1;min-height:0;touch-action:none}
 #cv{display:block;width:100%;height:100%}
 .chart-label{position:absolute;top:8px;left:10px;font-size:9px;color:var(--text2);letter-spacing:.06em;z-index:2;pointer-events:none}
@@ -348,8 +360,18 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
     <span class="sb-item"><span>Broker</span><span class="sb-val" style="color:var(--red)">not connected</span></span>
   </div>
 
-  <!-- ==================== SYMBOL TABS (drive the chart) ==================== -->
-  <div class="sym-tabs">
+  <!-- ==================== TRADING SYMBOL (isolates engine + chart) ==================== -->
+  <div class="symbol-mode-bar">
+    <span class="symbol-mode-lbl">Trading Symbol</span>
+    <div class="symbol-mode-seg" id="symbolModeSeg">
+      <button class="xau" data-v="XAU" onclick="setSymbolMode('XAU')">XAUUSD</button>
+      <button class="btc" data-v="BTC" onclick="setSymbolMode('BTC')">BTCUSD</button>
+      <button class="both on" data-v="BOTH" onclick="setSymbolMode('BOTH')">BOTH</button>
+    </div>
+  </div>
+
+  <!-- ==================== SYMBOL TABS (backtest replay switcher only) ==================== -->
+  <div class="sym-tabs" id="symTabs" style="display:none">
     <div class="sym-tab xau active" id="tabXAU" onclick="setActiveSymbol('XAU')">
       <span class="st-dot" id="tabXAUDot"></span>
       <span class="st-name">XAUUSD</span>
@@ -364,9 +386,9 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
     </div>
   </div>
 
-  <!-- ==================== CHART ==================== -->
-  <div class="chart-wrap">
-    <div class="chart-area" id="chartArea">
+  <!-- ==================== CHART(S) ==================== -->
+  <div class="chart-wrap" id="chartWrap">
+    <div class="chart-area panel-xau" id="chartArea">
       <canvas id="cv"></canvas>
       <div class="chart-label" id="chartLabel">XAUUSD · <b>M1</b></div>
       <div class="bt-chart-badge" id="chartBtBadge">
@@ -382,6 +404,20 @@ input:checked + .slider-tg:before{transform:translateX(16px);background:var(--go
       <div class="watermark" id="chartWatermark" style="display:none">
         <span id="wmMain">DISCONNECTED</span>
         <small id="wmSub">Waiting for live feed…</small>
+      </div>
+    </div>
+    <div class="chart-area panel-btc" id="chartArea2" style="display:none">
+      <canvas id="cv2"></canvas>
+      <div class="chart-label" id="chartLabel2">BTCUSD · <b>M1</b></div>
+      <div class="tfs">
+        <button class="tf on" data-g="60" onclick="setTF2(60)">M1</button>
+        <button class="tf" data-g="300" onclick="setTF2(300)">M5</button>
+        <button class="tf" data-g="900" onclick="setTF2(900)">M15</button>
+      </div>
+      <div class="chart-hint"><span style="color:#4da6ff">— EMA20</span> &nbsp;<span style="color:#f5a623">— EMA50</span> &nbsp;<span style="color:#00d4aa">┈ TP</span> &nbsp;<span style="color:#ff4455">┈ SL</span> &nbsp;· drag to pan · wheel/pinch to zoom</div>
+      <div class="watermark" id="chartWatermark2" style="display:none">
+        <span id="wmMain2">DISCONNECTED</span>
+        <small id="wmSub2">Waiting for live feed…</small>
       </div>
     </div>
   </div>
@@ -855,8 +891,57 @@ const SYM = {
 };
 
 let activeSymbol = 'XAU';
-let activeTF = 60;
+let activeTF = 60;   // timeframe of the primary chart panel (#cv)
+let activeTF2 = 60;  // timeframe of the secondary chart panel (#cv2, BTC in BOTH mode)
 let autoReconnect = true;
+
+/* ============================================================
+   MASTER TRADING-SYMBOL SELECTION
+   selectedSymbol: 'XAU' | 'BTC' | 'BOTH'. This is the single
+   source of truth that isolates XAUUSD and BTCUSD at every
+   level — analysis, setup detection, trade execution, trade
+   management for NEW entries, notifications, and chart display.
+   Every trade-execution path must go through canTradeSymbol().
+   ============================================================ */
+let selectedSymbol = (function(){
+  try { const v = localStorage.getItem('apex_selectedSymbol'); if (v === 'XAU' || v === 'BTC' || v === 'BOTH') return v; } catch(_){}
+  return 'BOTH';
+})();
+
+// Execution-engine-level gate. Every trade-execution request (live entries,
+// and the backtest symbol picker) passes through this — not just the UI.
+function canTradeSymbol(sym){
+  if (selectedSymbol === 'BOTH') return true;
+  return sym === selectedSymbol;
+}
+
+// Whether a symbol's chart/analysis should currently be considered
+// "on screen" — used to decide whether a redraw is worth doing and
+// whether analysis/notifications for that symbol are active at all.
+function isSymbolActive(sym){
+  return canTradeSymbol(sym);
+}
+
+// Whether `sym`'s chart is actually visible right now, so live-tick
+// handlers know whether a redraw is worth doing. In BOTH mode both
+// panels are always on screen; in single-symbol mode only that symbol's
+// panel exists; during backtest replay it's whichever symbol the replay
+// tab is currently showing.
+function isSymbolVisible(sym){
+  if (btChartActive) return btChartSym === sym;
+  if (selectedSymbol === 'BOTH') return true;
+  return activeSymbol === sym;
+}
+
+// Which timeframe is currently displayed for `sym`'s panel — needed so a
+// live candle update only triggers a redraw when it actually matches what's
+// on screen for that panel (XAU/panel1 uses activeTF, BTC/panel2 in BOTH
+// mode uses its own independent activeTF2).
+function symDisplayedTF(sym){
+  if (btChartActive) return btChartTF;
+  if (selectedSymbol === 'BOTH') return sym === 'BTC' ? activeTF2 : activeTF;
+  return activeTF;
+}
 
 /* ============================================================
    BACKTEST-ON-MAIN-CHART STATE
@@ -877,41 +962,67 @@ let btChartRevealIdx = null; // index into stats.equityCurve; null = show everyt
    ============================================================ */
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
+const cv2 = document.getElementById('cv2');
+const ctx2 = cv2.getContext('2d');
+
+function resizeOneCanvas(canvasEl, ctxEl){
+  const r = canvasEl.parentElement.getBoundingClientRect();
+  canvasEl.width  = Math.max(1, r.width  * DPR);
+  canvasEl.height = Math.max(1, r.height * DPR);
+  canvasEl.style.width  = r.width  + 'px';
+  canvasEl.style.height = r.height + 'px';
+  ctxEl.setTransform(1,0,0,1,0,0);
+  ctxEl.scale(DPR, DPR);
+}
 
 function resizeCV(){
-  const r = cv.parentElement.getBoundingClientRect();
-  cv.width  = Math.max(1, r.width  * DPR);
-  cv.height = Math.max(1, r.height * DPR);
-  cv.style.width  = r.width  + 'px';
-  cv.style.height = r.height + 'px';
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.scale(DPR, DPR);
+  resizeOneCanvas(cv, ctx);
+  if (!btChartActive && selectedSymbol === 'BOTH') resizeOneCanvas(cv2, ctx2);
   drawChart();
 }
 
+// Top-level dispatcher: renders whichever chart panel(s) the current
+// symbol-selection mode calls for. Single-symbol mode → one full-size
+// panel for that symbol only. BOTH mode → XAUUSD on top, BTCUSD below,
+// each fully independent (own candles/EMA/signals/trade lines).
 function drawChart(){
   if (btChartActive) { drawBacktestChart(); return; }
-  const W = cv.width / DPR, H = cv.height / DPR;
-  ctx.clearRect(0,0,W,H);
-  ctx.fillStyle = '#060608';
-  ctx.fillRect(0,0,W,H);
+  const panel1Sym = (selectedSymbol === 'BOTH') ? 'XAU' : selectedSymbol;
+  activeSymbol = panel1Sym; // keep legacy references (drawer, tabs) in sync
+  renderLiveChart(cv, ctx, panel1Sym, activeTF, {
+    label:'chartLabel', wm:'chartWatermark', wmMain:'wmMain', wmSub:'wmSub'
+  });
+  if (selectedSymbol === 'BOTH') {
+    renderLiveChart(cv2, ctx2, 'BTC', activeTF2, {
+      label:'chartLabel2', wm:'chartWatermark2', wmMain:'wmMain2', wmSub:'wmSub2'
+    });
+  }
+}
 
-  const s = SYM[activeSymbol];
-  const data = s.candles[activeTF];
-  const wm = document.getElementById('chartWatermark');
+function renderLiveChart(canvasEl, ctxEl, sym, tf, ids){
+  const DPR_ = DPR;
+  const W = canvasEl.width / DPR_, H = canvasEl.height / DPR_;
+  ctxEl.clearRect(0,0,W,H);
+  ctxEl.fillStyle = '#060608';
+  ctxEl.fillRect(0,0,W,H);
+
+  const s = SYM[sym];
+  const data = s.candles[tf];
+  const wm = document.getElementById(ids.wm);
 
   if (!data || data.length < 2) {
-    ctx.fillStyle = '#3a3a58'; ctx.font = '11px "Space Mono"';
-    ctx.textAlign = 'center';
-    ctx.fillText(s.connected ? 'Loading candle data…' : 'No live feed — waiting to connect…', W/2, H/2);
-    wm.style.display = s.connected ? 'none' : 'flex';
+    ctxEl.fillStyle = '#3a3a58'; ctxEl.font = '11px "Space Mono"';
+    ctxEl.textAlign = 'center';
+    ctxEl.fillText(s.connected ? 'Loading candle data…' : 'No live feed — waiting to connect…', W/2, H/2);
+    if (wm) wm.style.display = s.connected ? 'none' : 'flex';
     if (!s.connected) {
-      document.getElementById('wmMain').textContent = 'DISCONNECTED';
-      document.getElementById('wmSub').textContent = s.label + ' feed offline — reconnecting automatically';
+      const wmMainEl = document.getElementById(ids.wmMain), wmSubEl = document.getElementById(ids.wmSub);
+      if (wmMainEl) wmMainEl.textContent = 'DISCONNECTED';
+      if (wmSubEl) wmSubEl.textContent = s.label + ' feed offline — reconnecting automatically';
     }
     return;
   }
-  wm.style.display = 'none';
+  if (wm) wm.style.display = 'none';
 
   const PAD = { t:18, r:64, b:22, l:4 };
   const cW = W - PAD.l - PAD.r;
@@ -934,7 +1045,7 @@ function drawChart(){
   // for this symbol always land on-screen, exactly like a MT5 chart keeps its
   // order lines visible.
   if (ACCOUNT && !SYM.__isBacktest) {
-    ACCOUNT.openPositions.filter(p => p.sym === activeSymbol).forEach(p => {
+    ACCOUNT.openPositions.filter(p => p.sym === sym).forEach(p => {
       hi = Math.max(hi, p.entry, p.sl, p.tp);
       lo = Math.min(lo, p.entry, p.sl, p.tp);
     });
@@ -946,24 +1057,24 @@ function drawChart(){
   const dec = s.decimals;
 
   // grid + price labels
-  ctx.strokeStyle = '#131320'; ctx.lineWidth = 0.5;
+  ctxEl.strokeStyle = '#131320'; ctxEl.lineWidth = 0.5;
   const ROWS = 6;
   for (let i = 0; i <= ROWS; i++) {
     const y = PAD.t + (cH / ROWS) * i;
-    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + cW, y); ctx.stroke();
+    ctxEl.beginPath(); ctxEl.moveTo(PAD.l, y); ctxEl.lineTo(PAD.l + cW, y); ctxEl.stroke();
     const p = maxP - (span / ROWS) * i;
-    ctx.fillStyle = '#3a3a58'; ctx.font = '8px "Space Mono"'; ctx.textAlign = 'left';
-    ctx.fillText(p.toFixed(dec), PAD.l + cW + 4, y + 3);
+    ctxEl.fillStyle = '#3a3a58'; ctxEl.font = '8px "Space Mono"'; ctxEl.textAlign = 'left';
+    ctxEl.fillText(p.toFixed(dec), PAD.l + cW + 4, y + 3);
   }
 
   // time labels (every ~6 candles)
-  ctx.fillStyle = '#2a2a40'; ctx.font = '8px "Space Mono"'; ctx.textAlign = 'center';
+  ctxEl.fillStyle = '#2a2a40'; ctxEl.font = '8px "Space Mono"'; ctxEl.textAlign = 'center';
   const timeStep = Math.max(1, Math.round(vis.length / 6));
   for (let i = 0; i < vis.length; i += timeStep) {
     const x = PAD.l + cW - (vis.length - 1 - i) * slotW - slotW/2;
     const d = new Date(vis[i].epoch * 1000);
     const lbl = d.getUTCHours().toString().padStart(2,'0') + ':' + d.getUTCMinutes().toString().padStart(2,'0');
-    ctx.fillText(lbl, x, PAD.t + cH + 14);
+    ctxEl.fillText(lbl, x, PAD.t + cH + 14);
   }
 
   // candles
@@ -971,14 +1082,14 @@ function drawChart(){
     const x = PAD.l + cW - (vis.length - 1 - i) * slotW - slotW/2;
     const up = c.close >= c.open;
     const col = up ? '#00d4aa' : '#ff4455';
-    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x, toY(c.high));
-    ctx.lineTo(x, toY(c.low));
-    ctx.stroke();
+    ctxEl.strokeStyle = col; ctxEl.fillStyle = col; ctxEl.lineWidth = 1;
+    ctxEl.beginPath();
+    ctxEl.moveTo(x, toY(c.high));
+    ctxEl.lineTo(x, toY(c.low));
+    ctxEl.stroke();
     const yO = toY(c.open), yC = toY(c.close);
     const top = Math.min(yO, yC), h = Math.max(1, Math.abs(yC - yO));
-    ctx.fillRect(x - bodyW/2, top, bodyW, h);
+    ctxEl.fillRect(x - bodyW/2, top, bodyW, h);
   });
 
   // ---------- Stage 2 overlays: EMA20/50, structure swings, liquidity sweep ----------
@@ -988,47 +1099,47 @@ function drawChart(){
   const emaSlow = ema(closesFull, 50);
   function drawEmaLine(arr, color){
     if (!arr) return;
-    ctx.save();
-    ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.beginPath();
+    ctxEl.save();
+    ctxEl.strokeStyle = color; ctxEl.lineWidth = 1.2; ctxEl.beginPath();
     let started = false;
     vis.forEach((c, i) => {
       const v = arr[startIdx + i];
       if (v == null) return;
       const x = xAt(i), y = toY(v);
-      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      if (!started) { ctxEl.moveTo(x, y); started = true; } else ctxEl.lineTo(x, y);
     });
-    ctx.stroke();
-    ctx.restore();
+    ctxEl.stroke();
+    ctxEl.restore();
   }
   drawEmaLine(emaSlow, 'rgba(245,166,35,0.65)');
   drawEmaLine(emaFast, 'rgba(77,166,255,0.85)');
 
-  const analysis = ANALYSIS[activeSymbol];
-  if (activeTF === 300 && analysis && analysis.structure && analysis.structure.swings) {
+  const analysis = ANALYSIS[sym];
+  if (tf === 300 && analysis && analysis.structure && analysis.structure.swings) {
     vis.forEach((c, i) => {
       const sw = analysis.structure.swings.find(w => w.epoch === c.epoch);
       if (!sw) return;
       const x = xAt(i), y = toY(sw.price) + (sw.type === 'high' ? -8 : 8);
-      ctx.fillStyle = sw.type === 'high' ? '#ff4455' : '#00d4aa';
-      ctx.beginPath();
-      if (sw.type === 'high') { ctx.moveTo(x,y); ctx.lineTo(x-4,y+6); ctx.lineTo(x+4,y+6); }
-      else { ctx.moveTo(x,y); ctx.lineTo(x-4,y-6); ctx.lineTo(x+4,y-6); }
-      ctx.closePath(); ctx.fill();
+      ctxEl.fillStyle = sw.type === 'high' ? '#ff4455' : '#00d4aa';
+      ctxEl.beginPath();
+      if (sw.type === 'high') { ctxEl.moveTo(x,y); ctxEl.lineTo(x-4,y+6); ctxEl.lineTo(x+4,y+6); }
+      else { ctxEl.moveTo(x,y); ctxEl.lineTo(x-4,y-6); ctxEl.lineTo(x+4,y-6); }
+      ctxEl.closePath(); ctxEl.fill();
     });
   }
-  if (activeTF === 60 && analysis && analysis.sweep) {
+  if (tf === 60 && analysis && analysis.sweep) {
     const sw = analysis.sweep;
     const idx = vis.findIndex(c => c.epoch === sw.epoch);
     if (idx >= 0) {
       const x = xAt(idx), y = toY(sw.price);
-      ctx.save();
-      ctx.strokeStyle = sw.type === 'bullish' ? '#00d4aa' : '#ff4455';
-      ctx.setLineDash([2,3]); ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + cW, y); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = ctx.strokeStyle; ctx.font = 'bold 8px "Space Mono"'; ctx.textAlign = 'center';
-      ctx.fillText('SWEEP', x, y + (sw.type === 'bullish' ? 14 : -8));
-      ctx.restore();
+      ctxEl.save();
+      ctxEl.strokeStyle = sw.type === 'bullish' ? '#00d4aa' : '#ff4455';
+      ctxEl.setLineDash([2,3]); ctxEl.lineWidth = 1;
+      ctxEl.beginPath(); ctxEl.moveTo(PAD.l, y); ctxEl.lineTo(PAD.l + cW, y); ctxEl.stroke();
+      ctxEl.setLineDash([]);
+      ctxEl.fillStyle = ctxEl.strokeStyle; ctxEl.font = 'bold 8px "Space Mono"'; ctxEl.textAlign = 'center';
+      ctxEl.fillText('SWEEP', x, y + (sw.type === 'bullish' ? 14 : -8));
+      ctxEl.restore();
     }
   }
 
@@ -1036,21 +1147,21 @@ function drawChart(){
   if (s.price != null) {
     const y = toY(s.price);
     if (y >= PAD.t && y <= PAD.t + cH) {
-      ctx.save();
-      ctx.strokeStyle = s.prevPrice != null && s.price < s.prevPrice ? '#ff4455' : '#00d4aa';
-      ctx.setLineDash([4,4]); ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + cW, y); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.fillRect(PAD.l + cW, y - 7, PAD.r - 2, 14);
-      ctx.fillStyle = '#060608'; ctx.font = 'bold 9px "Space Mono"'; ctx.textAlign = 'left';
-      ctx.fillText(s.price.toFixed(dec), PAD.l + cW + 4, y + 3);
-      ctx.restore();
+      ctxEl.save();
+      ctxEl.strokeStyle = s.prevPrice != null && s.price < s.prevPrice ? '#ff4455' : '#00d4aa';
+      ctxEl.setLineDash([4,4]); ctxEl.lineWidth = 1;
+      ctxEl.beginPath(); ctxEl.moveTo(PAD.l, y); ctxEl.lineTo(PAD.l + cW, y); ctxEl.stroke();
+      ctxEl.setLineDash([]);
+      ctxEl.fillStyle = ctxEl.strokeStyle;
+      ctxEl.fillRect(PAD.l + cW, y - 7, PAD.r - 2, 14);
+      ctxEl.fillStyle = '#060608'; ctxEl.font = 'bold 9px "Space Mono"'; ctxEl.textAlign = 'left';
+      ctxEl.fillText(s.price.toFixed(dec), PAD.l + cW + 4, y + 3);
+      ctxEl.restore();
     }
   }
 
   // ---------- Stage 5: MT5-style open-order lines (entry / SL / TP + lot size) ----------
-  drawPositionLines(PAD, cW, cH, toY, dec);
+  drawPositionLines(ctxEl, sym, PAD, cW, cH, toY, dec);
 }
 
 /* ============================================================
@@ -1238,26 +1349,26 @@ function drawBacktestChart(){
 // on the currently active symbol — entry (blue=BUY / orange=SELL, solid),
 // TP (green, dashed) and SL (red, dashed) — each carrying an inline label with
 // direction, size and price, the way MT5 renders open-order lines on chart.
-function drawPositionLines(PAD, cW, cH, toY, dec){
+function drawPositionLines(ctxEl, sym, PAD, cW, cH, toY, dec){
   if (!ACCOUNT) return;
-  const posList = ACCOUNT.openPositions.filter(p => p.sym === activeSymbol);
+  const posList = ACCOUNT.openPositions.filter(p => p.sym === sym);
   if (!posList.length) return;
 
   function line(y, color, label, dashed){
     if (!(y >= PAD.t - 1 && y <= PAD.t + cH + 1)) return;
-    ctx.save();
-    ctx.strokeStyle = color; ctx.lineWidth = dashed ? 1 : 1.3;
-    if (dashed) ctx.setLineDash([6,4]);
-    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + cW, y); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.font = 'bold 8.5px "Space Mono"';
-    const textW = ctx.measureText(label).width;
-    ctx.fillStyle = color;
-    ctx.fillRect(PAD.l + 4, y - 9, textW + 10, 13);
-    ctx.fillStyle = '#060608';
-    ctx.textAlign = 'left';
-    ctx.fillText(label, PAD.l + 9, y + 1);
-    ctx.restore();
+    ctxEl.save();
+    ctxEl.strokeStyle = color; ctxEl.lineWidth = dashed ? 1 : 1.3;
+    if (dashed) ctxEl.setLineDash([6,4]);
+    ctxEl.beginPath(); ctxEl.moveTo(PAD.l, y); ctxEl.lineTo(PAD.l + cW, y); ctxEl.stroke();
+    ctxEl.setLineDash([]);
+    ctxEl.font = 'bold 8.5px "Space Mono"';
+    const textW = ctxEl.measureText(label).width;
+    ctxEl.fillStyle = color;
+    ctxEl.fillRect(PAD.l + 4, y - 9, textW + 10, 13);
+    ctxEl.fillStyle = '#060608';
+    ctxEl.textAlign = 'left';
+    ctxEl.fillText(label, PAD.l + 9, y + 1);
+    ctxEl.restore();
   }
 
   posList.forEach(p => {
@@ -1278,24 +1389,29 @@ function toLots(sym, units){
   return (units / perLot).toFixed(2);
 }
 
-function setupChartInteraction(){
-  const area = document.getElementById('chartArea');
+// Wires pan/wheel-zoom/pinch-zoom for one chart panel. `resolveSym()`
+// returns the symbol key that panel is currently showing.
+// `backtestAware` — only the primary panel doubles as the backtest replay
+// view (btChartActive); the secondary BOTH-mode panel is always live.
+function setupChartInteraction(areaId, resolveSym, backtestAware){
+  const area = document.getElementById(areaId);
   let dragging = false, lastX = 0, lastOffset = 0;
 
   area.addEventListener('pointerdown', e => {
-    dragging = true; lastX = e.clientX; lastOffset = btChartActive ? btChartOffset : SYM[activeSymbol].chartOffset;
+    dragging = true; lastX = e.clientX;
+    lastOffset = (backtestAware && btChartActive) ? btChartOffset : SYM[resolveSym()].chartOffset;
     area.setPointerCapture(e.pointerId);
   });
   area.addEventListener('pointermove', e => {
     if (!dragging) return;
     const dx = e.clientX - lastX;
-    if (btChartActive) {
+    if (backtestAware && btChartActive) {
       const slotW = Math.max(3, Math.min(40, btChartCandleW));
       btChartOffset = Math.max(0, lastOffset + Math.round(dx / slotW));
       drawChart();
       return;
     }
-    const s = SYM[activeSymbol];
+    const s = SYM[resolveSym()];
     const slotW = Math.max(3, Math.min(40, s.chartCandleW));
     // dragging right (positive dx) reveals older candles → increase offset
     s.chartOffset = Math.max(0, lastOffset + Math.round(dx / slotW));
@@ -1309,12 +1425,12 @@ function setupChartInteraction(){
   area.addEventListener('wheel', e => {
     e.preventDefault();
     const dir = e.deltaY > 0 ? -1 : 1;
-    if (btChartActive) {
+    if (backtestAware && btChartActive) {
       btChartCandleW = Math.max(3, Math.min(40, btChartCandleW + dir));
       drawChart();
       return;
     }
-    const s = SYM[activeSymbol];
+    const s = SYM[resolveSym()];
     s.chartCandleW = Math.max(3, Math.min(40, s.chartCandleW + dir));
     drawChart();
   }, { passive:false });
@@ -1324,18 +1440,18 @@ function setupChartInteraction(){
   area.addEventListener('touchstart', e => {
     if (e.touches.length === 2) {
       pinchStartDist = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
-      pinchStartW = btChartActive ? btChartCandleW : SYM[activeSymbol].chartCandleW;
+      pinchStartW = (backtestAware && btChartActive) ? btChartCandleW : SYM[resolveSym()].chartCandleW;
     }
   }, { passive:true });
   area.addEventListener('touchmove', e => {
     if (e.touches.length === 2 && pinchStartDist) {
       const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
-      if (btChartActive) {
+      if (backtestAware && btChartActive) {
         btChartCandleW = Math.max(3, Math.min(40, pinchStartW * (d / pinchStartDist)));
         drawChart();
         return;
       }
-      const s = SYM[activeSymbol];
+      const s = SYM[resolveSym()];
       s.chartCandleW = Math.max(3, Math.min(40, pinchStartW * (d / pinchStartDist)));
       drawChart();
     }
@@ -1347,6 +1463,8 @@ function setupChartInteraction(){
    SYMBOL / TIMEFRAME SWITCHING
    ============================================================ */
 function setActiveSymbol(key){
+  // Only reachable via the sym-tabs strip, which is now shown exclusively
+  // during backtest replay (to switch which symbol's replay is on screen).
   if (btChartActive) {
     if (!btLastRun || !btLastRun.symbols.includes(key)) return; // that symbol wasn't part of this backtest run
     btChartSym = key;
@@ -1364,7 +1482,7 @@ function setActiveSymbol(key){
   drawChart();
 }
 function setTF(g){
-  document.querySelectorAll('.tfs .tf').forEach(b => b.classList.toggle('on', +b.dataset.g === g));
+  document.querySelectorAll('#chartArea .tfs .tf').forEach(b => b.classList.toggle('on', +b.dataset.g === g));
   if (btChartActive) {
     btChartTF = g;
     btUpdateChartLabel();
@@ -1372,11 +1490,70 @@ function setTF(g){
     return;
   }
   activeTF = g;
-  document.getElementById('chartLabel').innerHTML = `${SYM[activeSymbol].label} · <b>${GRAN_LABEL[g]}</b>`;
+  const panel1Sym = (selectedSymbol === 'BOTH') ? 'XAU' : selectedSymbol;
+  document.getElementById('chartLabel').innerHTML = `${SYM[panel1Sym].label} · <b>${GRAN_LABEL[g]}</b>`;
+  drawChart();
+}
+// Timeframe control for the secondary (BTCUSD) panel — only active in
+// BOTH mode, fully independent from the primary panel's timeframe.
+function setTF2(g){
+  document.querySelectorAll('#chartArea2 .tfs .tf').forEach(b => b.classList.toggle('on', +b.dataset.g === g));
+  activeTF2 = g;
+  document.getElementById('chartLabel2').innerHTML = `${SYM.BTC.label} · <b>${GRAN_LABEL[g]}</b>`;
   drawChart();
 }
 function scrollDashIntoView(){
   document.getElementById('viewDash').scrollIntoView({ behavior:'smooth' });
+}
+
+/* ============================================================
+   MASTER SYMBOL MODE — layout, tabs, and engine isolation
+   ============================================================ */
+function setSymbolMode(mode){
+  if (mode !== 'XAU' && mode !== 'BTC' && mode !== 'BOTH') return;
+  if (btChartActive) btExitChartView(); // leaving replay view when the trading symbol changes
+  selectedSymbol = mode;
+  try { localStorage.setItem('apex_selectedSymbol', mode); } catch(_){}
+  applySymbolModeUI();
+  logFeed(`Trading symbol set to ${mode === 'BOTH' ? 'XAUUSD + BTCUSD (BOTH)' : SYM[mode].label} — ${mode === 'BOTH' ? 'both engines active' : SYM[mode === 'XAU' ? 'BTC' : 'XAU'].label + ' analysis, entries and alerts are now suspended'}`, 'system');
+}
+
+// Pure layout/state sync for the current selectedSymbol + btChartActive —
+// safe to call on boot, on mode change, and when returning from backtest
+// replay. Never logs anything itself (setSymbolMode does that once, only
+// on an actual user-driven mode change).
+function applySymbolModeUI(){
+  // 1. Segmented control state
+  document.querySelectorAll('#symbolModeSeg button').forEach(b => {
+    b.classList.toggle('on', b.dataset.v === selectedSymbol);
+  });
+
+  // 2. Chart layout: dual panels for BOTH, single full-height panel otherwise.
+  // Backtest replay always uses the single primary panel regardless of mode.
+  const wrap = document.getElementById('chartWrap');
+  const area2 = document.getElementById('chartArea2');
+  const dual = !btChartActive && selectedSymbol === 'BOTH';
+  wrap.classList.toggle('dual', dual);
+  area2.style.display = dual ? '' : 'none';
+
+  // 3. Primary panel shows the selected symbol (or XAUUSD when BOTH); leave
+  // it alone while backtest replay owns activeSymbol/chartLabel.
+  if (!btChartActive) {
+    activeSymbol = dual ? 'XAU' : selectedSymbol;
+    document.getElementById('chartLabel').innerHTML = `${SYM[activeSymbol].label} · <b>${GRAN_LABEL[activeTF]}</b>`;
+    if (dual) document.getElementById('chartLabel2').innerHTML = `${SYM.BTC.label} · <b>${GRAN_LABEL[activeTF2]}</b>`;
+  }
+
+  // 4. sym-tabs strip is only meaningful for switching backtest replay —
+  // keep it hidden in normal live view regardless of mode.
+  document.getElementById('symTabs').style.display = btChartActive ? '' : 'none';
+
+  // 5. Constrain the backtest symbol picker to what's actually tradable
+  syncBacktestSymSegToMode();
+
+  // 6. Resize/redraw canvases for the (possibly new) layout
+  resizeCV();
+  updateAccountUI();
 }
 
 /* ============================================================
@@ -1431,7 +1608,7 @@ function updatePriceUI(sym, price){
   if (dir) {
     tabPriceEl.classList.toggle('up', dir==='up'); tabPriceEl.classList.toggle('dn', dir==='dn');
   }
-  if (activeSymbol === sym) drawChart();
+  if (isSymbolVisible(sym)) drawChart();
 }
 
 function setDot(id, state){
@@ -1447,7 +1624,7 @@ function setSymConnected(sym, connected){
   setDot('tab' + sym + 'Dot', connected);
   updateModeBadge();
   updateFeedsCount();
-  if (activeSymbol === sym) drawChart();
+  if (isSymbolVisible(sym)) drawChart();
 }
 
 function updateFeedsCount(){
@@ -1793,7 +1970,7 @@ function runAnalysis(sym){
   ANALYSIS[sym] = result;
 
   if (!result.ready) {
-    if (activeSymbol === sym) updateModeStripRegime(null);
+    if (isSymbolVisible(sym)) updateModeStripRegime(null);
     return;
   }
 
@@ -1807,7 +1984,7 @@ function runAnalysis(sym){
   }
   ANALYSIS[sym].lastSignalTxt = newSig;
 
-  if (activeSymbol === sym) updateModeStripRegime(result);
+  if (isSymbolVisible(sym)) updateModeStripRegime(result);
   if (document.getElementById('drawerSetup').classList.contains('open') && setupDrawerSymbol === sym) {
     renderSetupDrawer();
   }
@@ -1873,7 +2050,7 @@ function renderSetupDrawer(){
 
 // Re-run analysis periodically — cheap enough (pure math over cached
 // candle arrays) to run every few seconds without taxing the UI thread.
-setInterval(() => { runAnalysis('XAU'); runAnalysis('BTC'); }, 4000);
+setInterval(() => { if (canTradeSymbol('XAU')) runAnalysis('XAU'); if (canTradeSymbol('BTC')) runAnalysis('BTC'); }, 4000);
 
 /* ============================================================
    RISK ENGINE + SL/TP TRADE MANAGEMENT + LIVE SAFETY CHECKLIST
@@ -2512,6 +2689,10 @@ function computeEquity(){
 }
 
 function maybeEnterTrade(sym){
+  // Execution-engine-level symbol isolation (non-negotiable): a symbol that
+  // isn't part of the current Trading Symbol selection can never open a
+  // trade here, regardless of what called this function or what the UI shows.
+  if (!canTradeSymbol(sym)) return;
   if (!BOT_STATE.running) return;
   if (!ACCOUNT.cfg.autoEnter) return;
   const gate = safetyGate(sym);
@@ -2578,7 +2759,7 @@ function maybeEnterTrade(sym){
   updatePositionUIField(sym, pos);
   logFeed(`[${SYM[sym].label}] APEX ${dir.toUpperCase()} opened @ ${entry.toFixed(SYM[sym].decimals)} · ${lots.toFixed(2)} lots · SL ${sl.toFixed(SYM[sym].decimals)} · TP ${tp.toFixed(SYM[sym].decimals)} · risk $${riskAmount.toFixed(2)} · RR ${setup.rr.toFixed(2)} (score ${setup.score})`, 'trade');
   renderPositionsDrawer();
-  if (activeSymbol === sym) drawChart();
+  if (isSymbolVisible(sym)) drawChart();
 }
 
 function managePositions(){
@@ -2616,7 +2797,7 @@ function managePositions(){
         ACCOUNT.lossStreak = 0;
       }
       logFeed(`[${SYM[p.sym].label}] SIM ${p.dir.toUpperCase()} closed @ ${exit.toFixed(SYM[p.sym].decimals)} · ${reason} · P/L ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, 'trade');
-      if (activeSymbol === p.sym) drawChart();
+      if (isSymbolVisible(p.sym)) drawChart();
     } else {
       stillOpen.push(p);
     }
@@ -2816,7 +2997,9 @@ function riskEngineTick(){
   rolloverDailyIfNeeded();
   managePositions();
   for (const sym of ['XAU','BTC']) {
-    if (ANALYSIS[sym] && ANALYSIS[sym].ready) maybeEnterTrade(sym);
+    // canTradeSymbol() is also enforced inside maybeEnterTrade() itself —
+    // checked here too so a de-selected symbol isn't even considered.
+    if (canTradeSymbol(sym) && ANALYSIS[sym] && ANALYSIS[sym].ready) maybeEnterTrade(sym);
   }
   updateAccountUI();
   if (document.getElementById('drawerPositions').classList.contains('open')) renderPositionsDrawer();
@@ -2864,8 +3047,28 @@ let btLastRun = null; // { perSym: {XAU:{...}, BTC:{...}}, combined:{...} }
 let btLiveCtl = null; // { paused, cancelled, speed, idx } — drives the live on-chart replay loop while a backtest is running
 
 function btSetSym(v){
+  if (!canTradeSymbol(v) && v !== 'BOTH') return; // respect master symbol selection
+  if (v === 'BOTH' && selectedSymbol !== 'BOTH') return;
   btSymFilter = v;
   document.querySelectorAll('#btSymSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+}
+
+// The live "Trading Symbol" selection also governs backtesting (spec §12):
+// if the master mode is a single symbol, the backtest can only run that
+// symbol; BOTH unlocks all three backtest options (XAU / BTC / BOTH) as before.
+function syncBacktestSymSegToMode(){
+  const seg = document.getElementById('btSymSeg');
+  if (!seg) return;
+  seg.querySelectorAll('button').forEach(b => {
+    const v = b.dataset.v;
+    const allowed = (selectedSymbol === 'BOTH') || (v === selectedSymbol);
+    b.disabled = !allowed;
+    b.style.opacity = allowed ? '' : '0.35';
+    b.style.cursor = allowed ? '' : 'not-allowed';
+  });
+  if (!((selectedSymbol === 'BOTH') || (btSymFilter === selectedSymbol))) {
+    btSetSym(selectedSymbol === 'BOTH' ? 'BOTH' : selectedSymbol);
+  }
 }
 
 function btInitDefaults(){
@@ -3740,6 +3943,7 @@ function btEnterChartView(sym){
   btChartCandleW = SYM[btChartSym].chartCandleW || 9;
   btChartActive = true;
   closeDrawer();
+  applySymbolModeUI(); // collapses to single-panel layout + shows the sym-tabs replay switcher
   document.querySelectorAll('.sym-tab').forEach(t => t.classList.remove('active'));
   const tab = document.getElementById('tab' + btChartSym);
   if (tab) tab.classList.add('active');
@@ -3751,10 +3955,10 @@ function btExitChartView(){
   btChartActive = false;
   btChartRevealIdx = null;
   document.getElementById('chartBtBadge').style.display = 'none';
+  applySymbolModeUI(); // restores dual/single live layout for the current Trading Symbol mode
   document.querySelectorAll('.sym-tab').forEach(t => t.classList.remove('active'));
   const tab = document.getElementById('tab' + activeSymbol);
   if (tab) tab.classList.add('active');
-  document.getElementById('chartLabel').innerHTML = `${SYM[activeSymbol].label} · <b>${GRAN_LABEL[activeTF]}</b>`;
   drawChart();
 }
 function btUpdateChartLabel(){
@@ -3985,7 +4189,7 @@ function connectDeriv(){
         epoch:+c.epoch, open:+c.open, high:+c.high, low:+c.low, close:+c.close,
       }));
       logFeed(`${msg.candles.length} ${GRAN_LABEL[gran]} candles loaded from Deriv (XAUUSD)`);
-      if (activeSymbol === 'XAU') drawChart();
+      if (isSymbolVisible('XAU')) drawChart();
     }
   };
 
@@ -4025,7 +4229,7 @@ async function seedBinanceHistory(){
         epoch: Math.floor(r[0] / 1000), open:+r[1], high:+r[2], low:+r[3], close:+r[4],
       }));
       logFeed(`${rows.length} ${GRAN_LABEL[gran]} candles loaded from Binance REST (BTCUSD)`);
-      if (activeSymbol === 'BTC') drawChart();
+      if (isSymbolVisible('BTC')) drawChart();
     } catch (e) {
       logFeed('Binance history seed failed (' + interval + '): ' + e.message);
     }
@@ -4089,7 +4293,7 @@ function connectBinance(){
         const cap = gran === 60 ? 400 : gran === 300 ? 200 : 120;
         if (arr.length > cap) arr.shift();
       }
-      if (activeSymbol === 'BTC' && gran === activeTF) drawChart();
+      if (isSymbolVisible('BTC') && gran === symDisplayedTF('BTC')) drawChart();
     }
   };
 
@@ -4238,8 +4442,9 @@ function promptInstall(){
    BOOT
    ============================================================ */
 window.addEventListener('resize', resizeCV);
-setupChartInteraction();
-resizeCV();
+setupChartInteraction('chartArea', () => (selectedSymbol === 'BOTH') ? 'XAU' : selectedSymbol, true);
+setupChartInteraction('chartArea2', () => 'BTC', false);
+applySymbolModeUI(); // sets initial dual/single layout + resizes + draws
 loadBotState();
 loadAuditLog();
 applyBotStateUI();
@@ -4249,7 +4454,7 @@ updateModeBadge();
 connectDeriv();
 connectBinance();
 logFeed('Confluence Terminal booted — Stage 5 (manual start/stop, audit trail, live performance charts, on-chart order lines)', 'system');
-setTimeout(() => { runAnalysis('XAU'); runAnalysis('BTC'); }, 6000);
+setTimeout(() => { if (canTradeSymbol('XAU')) runAnalysis('XAU'); if (canTradeSymbol('BTC')) runAnalysis('BTC'); }, 6000);
 setInterval(riskEngineTick, 3000);
 
 if ('serviceWorker' in navigator) {
