@@ -573,6 +573,8 @@ input[type=range]::-webkit-slider-thumb{
   <span class="sb-sep">·</span>
   <div class="sb-item"><span>Regime</span>&nbsp;<span class="sb-val" id="sbRegime">—</span></div>
   <span class="sb-sep">·</span>
+  <div class="sb-item"><span>Locked</span>&nbsp;<span class="sb-val au" id="sbLocked">$0.00</span><span style="color:var(--text3)" id="sbLockHits"></span></div>
+  <span class="sb-sep">·</span>
   <span class="sb-badge" id="sbNewsMode"></span>
   <span class="sb-badge" id="sbMode"></span>
   <span class="sb-badge" id="sbPostTP" style="display:none;color:#7caaff;border-color:rgba(124,170,255,0.3);background:rgba(124,170,255,0.08)">⏳ POST-TP</span>
@@ -737,6 +739,19 @@ input[type=range]::-webkit-slider-thumb{
           <div class="target-bar-track"><div class="target-bar-fill" id="targetBarFill" style="width:0%"></div></div>
           <span style="font-size:9px;color:var(--text3);white-space:nowrap" id="targetBarLabel">—</span>
         </div>
+        <div class="field-hint">Each time floating profit reaches this amount, it gets locked into a vault and the working balance drops back down — see Profit Lock below.</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;justify-content:space-between">
+          <span>Profit Lock</span>
+          <input type="checkbox" id="cfgProfitLockEnabled" checked/>
+        </label>
+        <div class="field-row">
+          <span style="font-size:11px;color:var(--text2)">Keep in play after 2nd hit:</span>
+          <input class="finput" type="number" id="cfgProfitLockKeepPct" placeholder="30" min="0" max="100" step="5" style="width:60px"/>
+          <span class="funit">%</span>
+        </div>
+        <div class="field-hint">1st time the profit target is hit, 100% of that profit is locked away and the bot keeps trading on the reset balance. From the 2nd hit onward, only this % of each new profit chunk stays in play — the rest keeps getting locked.</div>
       </div>
     </div>
     <div class="settings-section">
@@ -1105,6 +1120,15 @@ const CFG = {
   RR           : 3.0,
   START_BALANCE: 0,
   PROFIT_TARGET: 0,
+  // ── Profit Lock ──
+  // Every time floating profit (since the last lock) reaches PROFIT_TARGET,
+  // that profit is swept into a separate locked vault and the working
+  // trading balance drops back down — so a drawdown afterward can never eat
+  // into money already banked. First hit locks 100% of the profit chunk.
+  // From the 2nd hit onward, only PROFIT_LOCK_KEEP_PCT of each new profit
+  // chunk stays in play (compounds forward); the rest keeps getting locked.
+  PROFIT_LOCK_ENABLED: true,
+  PROFIT_LOCK_KEEP_PCT: 30,   // % of profit kept in the trading balance from the 2nd hit onward
   MAX_DD_PCT   : 5.0,
   WIN_RATE_TGT : 55,
   DEMO_BALANCE : 0,
@@ -1159,6 +1183,12 @@ let demoStartBal    = 0;
 let demoPosId       = 0;
 let demoPositions   = [];
 let demoTradeLog    = [];
+
+// ── Profit Lock state ──
+let lockedProfit       = 0;   // cumulative $ swept into the vault — never used for position sizing
+let profitLockHits     = 0;   // how many times the profit target has been reached
+let profitLockBaseline = 0;   // working balance is measured against this since the last lock event
+
 let liveEquity      = [];   // balance snapshot after each closed live trade
 let liveMaxBal      = 0;    // peak balance for live DD calculation
 let liveMaxDD       = 0;    // running max drawdown % in current session
@@ -5417,6 +5447,64 @@ function updateThreePhaseTrail(pos, currentPrice) {
 }
 
 // ── CHECK DEMO POSITIONS ──
+// ── PROFIT LOCK ──
+// Sweeps profit into a locked vault once CFG.PROFIT_TARGET is reached, then
+// drops the working trading balance back down so a later drawdown can never
+// eat into money already banked. The bot keeps trading on the reduced
+// working balance — the vault is never touched by position sizing.
+//
+//   1st hit: 100% of that profit chunk is locked away.
+//   2nd hit onward: only CFG.PROFIT_LOCK_KEEP_PCT of each new chunk stays in
+//   the working balance (compounds forward); the rest keeps getting locked.
+//
+// Call this after ANY change to demoBalance from a closed trade.
+function checkProfitLock() {
+  if (!CFG.PROFIT_LOCK_ENABLED) return;
+  const target = CFG.PROFIT_TARGET;
+  if (!target || target <= 0) return;
+  if (!profitLockBaseline) profitLockBaseline = demoStartBal || demoBalance;
+
+  // Loop in case one big win jumps past the target by more than one
+  // increment — each full target-sized chunk gets its own lock + hit-count.
+  let guard = 0;
+  while (demoBalance - profitLockBaseline >= target && guard < 50) {
+    guard++;
+    profitLockHits++;
+    const keepPct     = profitLockHits >= 2 ? Math.max(0, Math.min(100, CFG.PROFIT_LOCK_KEEP_PCT)) : 0;
+    const keepAmount  = target * (keepPct / 100);
+    const lockAmount  = target - keepAmount;
+
+    lockedProfit       += lockAmount;
+    demoBalance        -= lockAmount;
+    profitLockBaseline += keepAmount;
+
+    addSignal('info',
+      `[PROFIT LOCK] Target #${profitLockHits} hit — $${lockAmount.toFixed(2)} locked away` +
+      (keepPct > 0 ? `, $${keepAmount.toFixed(2)} (${keepPct}%) kept in play.` : `. Balance reset to $${profitLockBaseline.toFixed(2)}.`) +
+      ` Total vaulted: $${lockedProfit.toFixed(2)}.`,
+      null);
+  }
+  updateProfitLockUI();
+  _persistProfitLock();
+}
+
+function updateProfitLockUI() {
+  const el = $('sbLocked');   if (el)    el.textContent = `$${lockedProfit.toFixed(2)}`;
+  const hi = $('sbLockHits'); if (hi)    hi.textContent = profitLockHits > 0 ? ` (${profitLockHits}x hit)` : '';
+}
+
+// Lightweight merge-persist so the vault survives a page refresh mid-session
+// without waiting for the user to open and re-save the settings drawer.
+function _persistProfitLock() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pabotCFG') || '{}');
+    saved.lockedProfit = lockedProfit;
+    saved.profitLockHits = profitLockHits;
+    saved.profitLockBaseline = profitLockBaseline;
+    localStorage.setItem('pabotCFG', JSON.stringify(saved));
+  } catch (e) {}
+}
+
 function checkDemoPositions() {
   if(!mid || !demoPositions.length) return;
   const closeData = [];
@@ -5464,6 +5552,7 @@ function checkDemoPositions() {
     // Bank the partial profit
     demoBalance = Math.max(0, demoBalance + partialPnL);
     sessionPnL += partialPnL;
+    checkProfitLock();
 
     // Reduce remaining position by 50%
     pos.lots     = +((pos.lots     || 0.01) * 0.50).toFixed(2);
@@ -5519,6 +5608,7 @@ function checkDemoPositions() {
     demoPositions = demoPositions.filter(p=>p.id!==pos.id);
     demoBalance = Math.max(0, demoBalance + (isNaN(pnl) ? 0 : pnl));
     sessionPnL += pnl;
+    checkProfitLock();
     if(pnl > 0) {
       wins++; consecutiveWins++; consecutiveLosses = 0;
       if(riskHalved) { riskHalved = false; addSignal('info',`Win — risk restored to normal (${consecutiveWins}W streak)`, null); }
@@ -5662,6 +5752,12 @@ function loadSettings() {
     const saved = JSON.parse(localStorage.getItem('pabotCFG') || '{}');
     if(saved.DEMO_BALANCE > 0) { CFG.DEMO_BALANCE = saved.DEMO_BALANCE; demoBalance = saved.DEMO_BALANCE; demoStartBal = saved.DEMO_BALANCE; }
     if(saved.PROFIT_TARGET) CFG.PROFIT_TARGET = saved.PROFIT_TARGET;
+    if(saved.PROFIT_LOCK_ENABLED !== undefined) CFG.PROFIT_LOCK_ENABLED = saved.PROFIT_LOCK_ENABLED;
+    if(saved.PROFIT_LOCK_KEEP_PCT !== undefined) CFG.PROFIT_LOCK_KEEP_PCT = saved.PROFIT_LOCK_KEEP_PCT;
+    // Profit-lock vault persists across reloads — it represents real banked profit.
+    if(saved.lockedProfit)       lockedProfit       = saved.lockedProfit;
+    if(saved.profitLockHits)     profitLockHits     = saved.profitLockHits;
+    profitLockBaseline = saved.profitLockBaseline || demoStartBal || demoBalance;
     if(saved.RISK_PCT)      CFG.RISK_PCT      = saved.RISK_PCT;
     if(saved.WIN_RATE_TGT)  CFG.WIN_RATE_TGT  = saved.WIN_RATE_TGT;
     if(saved.MAX_DD_PCT)    CFG.MAX_DD_PCT    = saved.MAX_DD_PCT;
@@ -5685,6 +5781,8 @@ function loadSettings() {
   } catch(e) {}
   $('cfgDemoBalance').value  = CFG.DEMO_BALANCE || '';
   $('cfgProfitTarget').value = CFG.PROFIT_TARGET || '';
+  $('cfgProfitLockEnabled').checked = CFG.PROFIT_LOCK_ENABLED !== false;
+  $('cfgProfitLockKeepPct').value = CFG.PROFIT_LOCK_KEEP_PCT ?? 30;
   $('cfgRiskPct').value      = CFG.RISK_PCT;
   $('cfgWinRate').value      = CFG.WIN_RATE_TGT;
   $('cfgMaxDD').value        = CFG.MAX_DD_PCT;
@@ -5719,6 +5817,8 @@ function saveSettings() {
   const newBal = parseFloat($('cfgDemoBalance').value) || 0;
   CFG.DEMO_BALANCE  = newBal;
   CFG.PROFIT_TARGET = parseFloat($('cfgProfitTarget').value) || 0;
+  CFG.PROFIT_LOCK_ENABLED = $('cfgProfitLockEnabled').checked;
+  CFG.PROFIT_LOCK_KEEP_PCT = Math.max(0, Math.min(100, parseFloat($('cfgProfitLockKeepPct').value) || 30));
   CFG.RISK_PCT      = parseFloat($('cfgRiskPct').value)  || 1.0;
   CFG.WIN_RATE_TGT  = parseInt($('cfgWinRate').value)    || 55;
   CFG.MAX_DD_PCT    = parseFloat($('cfgMaxDD').value)    || 5.0;
@@ -5743,6 +5843,8 @@ function saveSettings() {
   try {
     localStorage.setItem('pabotCFG', JSON.stringify({
       DEMO_BALANCE: CFG.DEMO_BALANCE, PROFIT_TARGET: CFG.PROFIT_TARGET,
+      PROFIT_LOCK_ENABLED: CFG.PROFIT_LOCK_ENABLED, PROFIT_LOCK_KEEP_PCT: CFG.PROFIT_LOCK_KEEP_PCT,
+      lockedProfit, profitLockHits, profitLockBaseline,
       RISK_PCT: CFG.RISK_PCT, WIN_RATE_TGT: CFG.WIN_RATE_TGT,
       MAX_DD_PCT: CFG.MAX_DD_PCT, RR: CFG.RR, MAX_LOT_CAP: CFG.MAX_LOT_CAP,
       MIN_LOT_SIZE: CFG.MIN_LOT_SIZE, LEVERAGE: CFG.LEVERAGE, MAX_SPREAD_USD: CFG.MAX_SPREAD_USD,
@@ -5764,6 +5866,7 @@ function saveSettings() {
     resetHardFloor(newBal);
     liveEquity = [newBal]; liveMaxBal = newBal; liveMaxDD = 0;
     wins = 0; losses = 0; demoTradeLog = [];
+    lockedProfit = 0; profitLockHits = 0; profitLockBaseline = newBal;
   }
   if(authed && !startBalance && balance) { startBalance = balance; CFG.START_BALANCE = balance; }
   updateStatsStrip(); updateTargetBar(); updateDepositNotice();
@@ -7704,6 +7807,7 @@ function _scanGapPositions() {
     demoPositions = demoPositions.filter(p => p.id !== pos.id);
     demoBalance = Math.max(0, demoBalance + (isNaN(pnl) ? 0 : pnl));
     sessionPnL += pnl;
+    checkProfitLock();
     if (pnl > 0) {
       wins++; consecutiveWins++; consecutiveLosses = 0;
       if (riskHalved) { riskHalved = false; addSignal('info', `Win — risk restored to normal`, null); }
@@ -7744,6 +7848,7 @@ function _scanGapPositions() {
 window.addEventListener('resize', resizeCV);
 resizeCV();
 loadSettings();
+updateProfitLockUI();
 setBtToday();
 Storage.init().catch(() => {});
 connect();
