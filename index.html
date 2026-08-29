@@ -1113,6 +1113,7 @@ const CFG = {
   LEVERAGE     : 20,          // account leverage — tune to your broker/exchange's actual BTCUSD leverage cap
   MAX_SPREAD_USD: 30,         // reference only — spread guard removed, trades no longer gated on this
   MAX_SL_PTS   : 450.0,       // Hard cap on SL distance in $ (rescaled for BTCUSD's price magnitude — tune to live ATR)
+  MAX_CONCURRENT_POS: 5,      // how many trades the bot can hold open at once — raised from 1 so more setups can fire
   // ── Three-Phase Trailing Stop ──
   TRAIL_ENABLED: true,
   TRAIL_PHASE_1: 60,          // % to TP for BE lock — raised from 50% to avoid premature BE on volatility
@@ -1514,39 +1515,39 @@ const REFINED_STRATEGY_CFG = {
   liquidity: {
     m5Lookback: 40,
     swingStrength: 1,
-    minSweepDepthATR: 0.008,      // was 0.015 — accepts near-trivial sweeps
-    maxSweepDepthATR: 2.50,       // was 2.00
-    minReclaimATR: 0.015,         // was 0.03
-    minReclaimRatio: 0.04,        // was 0.08
-    maxLevelAgeBars: 120,         // was 80
+    minSweepDepthATR: 0.003,      // was 0.008 — accepts even more trivial sweeps
+    maxSweepDepthATR: 3.00,       // was 2.50
+    minReclaimATR: 0.008,         // was 0.015
+    minReclaimRatio: 0.02,        // was 0.04
+    maxLevelAgeBars: 150,         // was 120
     minPreviousTouches: 1,
-    maxPreviousTouches: 16,       // was 12
+    maxPreviousTouches: 20,       // was 16
     preferFreshLiquidity: true,
     // NEW — scans the last N completed M5 bars for a sweep, not just the
     // single most-recent bar. This was the main reason 0 trades ever fired:
     // a valid sweep 2-3 bars back was being silently discarded.
-    sweepRecencyBars: 4
+    sweepRecencyBars: 6
   },
 
   // ---------- Existing M1 structure machinery ----------
   structure: {
     lookback: 26,                 // was 20
-    minBreakATR: 0.015,           // was 0.03
-    minCloseStrength: 0.25,       // was 0.36
-    minBodyRatio: 0.18,           // was 0.28
+    minBreakATR: 0.008,           // was 0.015
+    minCloseStrength: 0.15,       // was 0.25
+    minBodyRatio: 0.10,           // was 0.18
     requireCloseBeyondSwing: true,
-    maxBarsAfterSweep: 36          // was 24
+    maxBarsAfterSweep: 48          // was 36
   },
 
   // ---------- Order block ----------
   orderBlock: {
     lookback: 32,                 // was 26
-    maxAgeBars: 50,                // was 34
-    maxMitigations: 6,             // was 4
-    maxOBRangeATR: 2.80,           // was 2.20
-    minOBRangeATR: 0.01,           // was 0.02
+    maxAgeBars: 70,                // was 50
+    maxMitigations: 10,            // was 6
+    maxOBRangeATR: 3.20,           // was 2.80
+    minOBRangeATR: 0.005,          // was 0.01
     mustLeadToBMS: true,
-    originDistanceBars: 14          // was 10
+    originDistanceBars: 20          // was 14
   },
 
   // ---------- FVG / imbalance ----------
@@ -1582,9 +1583,9 @@ const REFINED_STRATEGY_CFG = {
 
   // ---------- Quality engine ----------
   quality: {
-    minimumScore: 25,   // was 40 — main lever for trade frequency; lower = more trades, weaker average edge
-    strongScore: 45,    // was 58
-    premiumScore: 65,   // was 75
+    minimumScore: 10,   // was 25 — main lever for trade frequency; lower = more trades, weaker average edge
+    strongScore: 25,    // was 45
+    premiumScore: 45,   // was 65
 
     weights: {
       liquidity: 20,
@@ -6027,8 +6028,8 @@ function runStrategy() {
   const newsMsg = newsEngine.getContextMessage();
   if (newsMsg && now % 15000 < 1000) addSignal('info', newsMsg, null);
 
-  // ── ONE POSITION AT A TIME ──
-  if (demoPositions.length > 0) return;
+  // ── CONCURRENT POSITION CAP ──
+  if (demoPositions.length >= CFG.MAX_CONCURRENT_POS) return;
 
   // ── POST-TP: clear when window expires or a fresh signal fires ──
   if (postTPState && now >= postTPState.evalEndTime) {
@@ -6057,9 +6058,9 @@ function runStrategy() {
     }
   }
 
-  // ── SWEEP EPOCH DEDUPLICATION (20-min cooldown + ±0.3 pt price tolerance) ──
-  const COOLDOWN   = 3.5 * 60 * 1000; // ↓30% cooldown — was 5 min
-  const PRICE_TOL  = 0.21;            // ↓30% dedup tolerance — was 0.3
+  // ── SWEEP EPOCH DEDUPLICATION (shortened cooldown + tighter price tolerance so more setups qualify) ──
+  const COOLDOWN   = 45 * 1000;   // was 3.5 min, now 45s
+  const PRICE_TOL  = 0.05;        // was 0.21
 
   const isBullDup = bs.sweepEpoch !== undefined && (
     (now - lastTradedBullSweepEpoch < COOLDOWN) ||
