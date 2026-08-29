@@ -839,7 +839,7 @@ input[type=range]::-webkit-slider-thumb{
             </div>
             <div style="flex:1">
               <label style="font-size:8px">Min Trail Distance ($)</label>
-              <input class="finput" type="number" id="cfgTrailDist" placeholder="150" min="10" max="1000" step="10" style="padding:6px 8px"/>
+              <input class="finput" type="number" id="cfgTrailDist" placeholder="2" min="0.1" max="1000" step="0.1" style="padding:6px 8px"/>
             </div>
           </div>
           <div style="display:flex;height:4px;border-radius:2px;overflow:hidden;margin-top:4px;background:var(--bg)">
@@ -1119,7 +1119,7 @@ const CFG = {
   TRAIL_PHASE_1: 60,          // % to TP for BE lock — raised from 50% to avoid premature BE on volatility
   TRAIL_PHASE_2: 80,          // % to TP for 40% trail
   TRAIL_PHASE_3: 93,          // % to TP for 60% runner trail
-  TRAIL_DIST   : 150.0,       // Min trail distance in $ (rescaled for BTCUSD volatility — tune to live ATR)
+  TRAIL_DIST   : 2.0,         // Min trail distance in $ — sized for this bot's tight scalp SLs (0.5–6 pts); also hard-capped at 50% of the move-to-TP in updateThreePhaseTrail() so BE can never lock in more than a TP win pays out
   // ── Blow-Proof Safety Layer Settings (user-configurable) ──
   SAFETY_HARD_FLOOR_PCT   : 10,   // % of start balance = hard floor
   SAFETY_MAX_RISK_CAP_PCT : 5,    // % hard cap on risk per trade
@@ -5383,9 +5383,17 @@ function updateThreePhaseTrail(pos, currentPrice) {
       pos._beLockTicks++;
     }
     if (pos._beLockTicks >= 2) {
-      // BE lock distance: proportional to total move (min 15%) or TRAIL_DIST, whichever is larger
-      // This gives more breathing room for volatile pairs like BTCUSD
-      const beDist = Math.max(CFG.TRAIL_DIST, totalMove * 0.15);
+      // BE lock distance: proportional to total move (min 15%, floored by
+      // TRAIL_DIST) but ALWAYS capped at 50% of the move-to-TP. Without this
+      // cap, TRAIL_DIST (a flat $ floor meant for wider-SL instruments) could
+      // exceed this bot's entire TP distance on its tight scalp SLs — pushing
+      // the "BE" stop past the actual target and letting a breakeven-labeled
+      // close bank more profit than a real TP win. That's the bug behind BE
+      // trades showing bigger $ amounts than TP trades in the log.
+      const beDist = Math.min(
+        Math.max(CFG.TRAIL_DIST, totalMove * 0.15),
+        totalMove * 0.50
+      );
       newSL = isBuy ? pos.entry + beDist : pos.entry - beDist;
       phase = 1;
       trailInfo = `BE LOCK @ ${CFG.TRAIL_PHASE_1}% — SL → ${newSL.toFixed(2)} (dist:${beDist.toFixed(1)}pts)`;
@@ -5725,7 +5733,7 @@ function saveSettings() {
   CFG.TRAIL_PHASE_1 = parseInt($('cfgTrailPhase1').value) || 50;
   CFG.TRAIL_PHASE_2 = parseInt($('cfgTrailPhase2').value) || 75;
   CFG.TRAIL_PHASE_3 = parseInt($('cfgTrailPhase3').value) || 90;
-  CFG.TRAIL_DIST    = parseFloat($('cfgTrailDist').value) || 150.0;
+  CFG.TRAIL_DIST    = parseFloat($('cfgTrailDist').value) || 2.0;
   // Safety layer settings
   CFG.SAFETY_HARD_FLOOR_PCT    = parseInt($('cfgHardFloorPct').value)    || 10;
   CFG.SAFETY_MAX_RISK_CAP_PCT  = parseFloat($('cfgMaxRiskCapPct').value) || 5;
