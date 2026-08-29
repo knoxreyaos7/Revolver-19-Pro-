@@ -1520,8 +1520,14 @@ const REFINED_STRATEGY_CFG = {
   simple: {
     lookbackBars: 8,       // how many prior M1 candles define "the recent range" to break
     minBodyRatio: 0.30,    // candle body must be >= this % of its own high-low range (filters dojis/noise)
-    useTrendFilter: true   // if true, skip trades clearly against the M5 EMA21/50 trend; set false for even more trades
+    useTrendFilter: true,  // if true, skip trades clearly against the M5 EMA21/50 trend; set false for even more trades
     // Note: the SL ATR cushion still comes from trade.slBufferATR below — unchanged.
+
+    // ---- quality upgrades (cheap filters that cut weak trades without reintroducing the old 5-gate chain) ----
+    avoidDeadRegime: true,   // skip only near-zero-volatility conditions, where any "breakout" is just spread noise
+    avoidNewsRelease: true,  // skip only the actual ±5min high-impact release window (spread spikes/fake wicks)
+    roomLookbackBars: 25,    // window used to check for a nearby opposing swing extreme ahead of the trade
+    minRoomATR: 0.5          // require at least this many ATRs of clear space before the nearest opposing extreme
   },
 
   // ---------- Liquidity (kept for chart zone drawing / backtesting tools only — no longer gates entries) ----------
@@ -2712,6 +2718,73 @@ const RefinedStrategy = (() => {
 
     const currentATR = atr(completed, 14) || barRange;
 
+    // ── Regime filter — skip only genuinely dead/no-volatility conditions,
+    // where a "breakout" is really just spread/noise wiggling across a flat
+    // range. EXPANSION/TREND/RANGE all still pass. ──
+    const regime = (typeof detectMarketRegime === "function") ? detectMarketRegime() : "UNKNOWN";
+    if (C.simple.avoidDeadRegime && regime === "DEAD") {
+      return { signal: false, reason: "DEAD_MARKET_REGIME", direction, quality: null };
+    }
+
+    // ── News blackout — skip only the actual high-impact release window
+    // itself (±5min), where spreads spike and wicks are unreliable. Doesn't
+    // touch the AWARE/POST_RELEASE windows the bot already sizes down for. ──
+    if (C.simple.avoidNewsRelease && typeof newsEngine !== "undefined" && newsEngine.state === "PRE_RELEASE") {
+      return { signal: false, reason: "NEWS_RELEASE_WINDOW", direction, quality: null };
+    }
+
+    // ── Room-to-run — reject breakouts firing right into a nearby opposing
+    // swing extreme (buying just under recent resistance / selling just
+    // above recent support tends to fail immediately). If price has already
+    // cleared that extreme, there's nothing in the way and the check passes
+    // automatically. ──
+    const roomWindow = completed.slice(-1 - C.simple.roomLookbackBars, -1);
+    let roomATR = Infinity;
+    if (roomWindow.length >= 5) {
+      if (isBuy) {
+        const resistance = highest(roomWindow, 0, roomWindow.length - 1);
+        if (Number.isFinite(resistance) && resistance > last.close) {
+          roomATR = currentATR > 0 ? (resistance - last.close) / currentATR : Infinity;
+        }
+      } else {
+        const support = lowest(roomWindow, 0, roomWindow.length - 1);
+        if (Number.isFinite(support) && support < last.close) {
+          roomATR = currentATR > 0 ? (last.close - support) / currentATR : Infinity;
+        }
+      }
+    }
+    if (C.simple.minRoomATR > 0 && roomATR < C.simple.minRoomATR) {
+      return { signal: false, reason: "NO_ROOM_TO_RUN", direction, quality: null };
+    }
+
+    // ── Dynamic quality score (0-100) — replaces the old flat 70. Feeds
+    // calculatePositionSize()'s existing quality multiplier, so stronger
+    // setups are sized up a bit and weak ones a bit down; both still trade.
+    const overshoot = isBuy ? (last.close - recentHigh) : (recentLow - last.close);
+    const overshootATR = currentATR > 0 ? clamp(overshoot / currentATR, 0, 1) : 0;
+    const breakoutScore = clamp(bodyRatio, 0, 1) * 40 + overshootATR * 20;         // up to 60
+
+    const trend = (C.simple.useTrendFilter || m5.length >= 55) ? getTrendBias(m5) : "NONE";
+    const aligned = (isBuy && trend === "BULL") || (!isBuy && trend === "BEAR");
+    const trendScore = trend === "NONE" ? 10 : (aligned ? 20 : 0);                  // up to 20
+
+    const regimeScore = (regime === "EXPANSION" || regime === "TREND") ? 15
+                       : regime === "RANGE" ? 5 : 0;                                // up to 15
+
+    const roomScore = Number.isFinite(roomATR)
+      ? clamp(roomATR / 3, 0, 1) * 5
+      : 5;                                                                          // up to 5
+
+    const scoreTotal = clamp(breakoutScore + trendScore + regimeScore + roomScore, 0, 100);
+    const approved = scoreTotal >= C.quality.minimumScore;
+
+    if (!approved) {
+      return { signal: false, reason: "QUALITY_BELOW_THRESHOLD", direction, quality: { total: scoreTotal, approved: false } };
+    }
+
+    const grade = scoreTotal >= C.quality.premiumScore ? "A"
+                : scoreTotal >= C.quality.strongScore   ? "B" : "C";
+
     // Minimal stand-ins for the structure objects the (unchanged) trade
     // geometry / UI code expects — built off the breakout candle and the
     // range it broke, not off any ICT sweep/BMS/OB detection anymore.
@@ -2734,7 +2807,12 @@ const RefinedStrategy = (() => {
       center: last.close,
       source: "SIMPLE_TRIGGER_CANDLE"
     };
-    const quality = { total: 70, grade: "B", approved: true, components: { simpleBreakout: 70 } };
+    const quality = {
+      total: scoreTotal,
+      grade,
+      approved: true,
+      components: { breakout: breakoutScore, trend: trendScore, regime: regimeScore, room: roomScore }
+    };
 
     return {
       signal: true,
