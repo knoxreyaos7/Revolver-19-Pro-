@@ -987,7 +987,7 @@ input[type=range]::-webkit-slider-thumb{
         <label>From</label>
         <div class="field-row">
           <input class="finput" type="text" id="btDateFrom" placeholder="23-05-2026" maxlength="10"/>
-          <button class="nav-btn" onclick="setBtToday()" style="font-size:8px;padding:4px 8px">Today</button>
+          <button class="nav-btn" onclick="setBtToday()" style="font-size:8px;padding:4px 8px">Last 7d</button>
         </div>
         <div class="field-hint">Start date — e.g. 23-05-2026 for a single day</div>
       </div>
@@ -6273,7 +6273,7 @@ function syncBotButtons() {
 }
 
 function startBot() {
-  if(!authed && demoBalance <= 0) { showToast(); return; }
+  if(demoBalance <= 0) { showToast(); return; }
   botOn = true;
   sessionPnL = 0; tradingLocked = false; consecutiveLosses = 0; consecutiveWins = 0; riskHalved = false;
   // ── SURVIVAL ENGINE: Reset streak-based locks on manual start ──
@@ -7037,7 +7037,15 @@ function setBtToday() {
   const m = String(now.getUTCMonth() + 1).padStart(2, '0');
   const y = now.getUTCFullYear();
   const today = `${d}-${m}-${y}`;
-  $('btDateFrom').value = today;
+  // Default "From" to 7 days back instead of today — a same-day default was
+  // silently producing near-zero (or, early in the UTC day, insufficient)
+  // candle data for the backtest, which reads identically to "strategy never
+  // trades" from the user's perspective.
+  const weekAgo = new Date(now.getTime() - 7 * 86400 * 1000);
+  const wd = String(weekAgo.getUTCDate()).padStart(2, '0');
+  const wm = String(weekAgo.getUTCMonth() + 1).padStart(2, '0');
+  const wy = weekAgo.getUTCFullYear();
+  $('btDateFrom').value = `${wd}-${wm}-${wy}`;
   $('btDateTo').value = today;
   $('btDateError').style.display = 'none';
   // Programmatic .value changes don't fire 'input' events — call manually
