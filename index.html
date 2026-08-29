@@ -706,9 +706,6 @@ input[type=range]::-webkit-slider-thumb{
         <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
           <span>Margin Level</span><span id="raLevel" style="color:var(--text);font-weight:700">—</span>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0">
-          <span>Overflow Ratio</span><span id="raOverflow" style="font-weight:700">—</span>
-        </div>
       </div>
     </div>
     <div class="settings-section">
@@ -801,14 +798,6 @@ input[type=range]::-webkit-slider-thumb{
           </div>
         </div>
         <div class="field-hint">Floor and ceiling on position size — no single trade can be smaller than the min or exceed the max.</div>
-      </div>
-      <div class="field">
-        <label>Risk Mode</label>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
-          <button type="button" id="cfgRiskModeReport" class="nav-btn" style="flex:1;justify-content:center;font-size:9px;padding:6px 4px" onclick="setRiskMode('REPORT')">REPORT</button>
-          <button type="button" id="cfgRiskModeBlock" class="nav-btn" style="flex:1;justify-content:center;font-size:9px;padding:6px 4px" onclick="setRiskMode('BLOCK')">BLOCK</button>
-        </div>
-        <div class="field-hint" id="riskModeHint">REPORT = warn but allow overflow trades. BLOCK = reject trades exceeding 1.5× target risk.</div>
       </div>
       <div class="field">
         <label>Max SL Distance</label>
@@ -1122,9 +1111,7 @@ const CFG = {
   MAX_LOT_CAP  : 10.0,
   MIN_LOT_SIZE : 0.01,        // floor lot size — no trade sizes below this
   LEVERAGE     : 20,          // account leverage — tune to your broker/exchange's actual BTCUSD leverage cap
-  MAX_SPREAD_USD: 30,         // hard block: skip/flag trades when live spread exceeds this ($)
-  // ── Risk Mode: REPORT = warn but allow, BLOCK = reject overflow trades ──
-  RISK_MODE    : 'REPORT',   // 'REPORT' | 'BLOCK'
+  MAX_SPREAD_USD: 30,         // reference only — spread guard removed, trades no longer gated on this
   MAX_SL_PTS   : 450.0,       // Hard cap on SL distance in $ (rescaled for BTCUSD's price magnitude — tune to live ATR)
   // ── Three-Phase Trailing Stop ──
   TRAIL_ENABLED: true,
@@ -5221,16 +5208,8 @@ function _executeDemoTrade(dir, ob, quality = 1) {
   if(slDist < 15) { addSignal('warn','SL too tight (< $15) — skipping',null); return; }
   const tpPrice = isBuy ? entryPrice + slDist * CFG.RR : entryPrice - slDist * CFG.RR;
 
-  // ── RISK OVERFLOW CHECK ──
+  // ── POSITION SIZING ──
   const riskCheck = checkRiskOverflow(slDist, quality);
-  if(riskCheck.blocked) {
-    addSignal('warn', `BLOCKED: Risk overflow ${riskCheck.overflow.toFixed(1)}× > 1.5× target — trade rejected`, mid);
-    return;
-  }
-  if(riskCheck.warning) {
-    addSignal('warn', riskCheck.warning, mid);
-  }
-
   const lots = riskCheck.lots;
   const qMult = riskCheck.qMult;
   const growthFactor = riskCheck.growthFactor;
@@ -5245,7 +5224,7 @@ function _executeDemoTrade(dir, ob, quality = 1) {
   const tpAmount = +(slAmount * CFG.RR).toFixed(2);
   const grade = quality >= 3 ? '★★★' : quality === 2 ? '★★' : '★';
   const newsTag = newsEngine.state !== 'NORMAL' ? ` [NEWS:${newsEngine.state}×${newsLotMult}]` : '';
-  const riskTag = riskCheck.overflow > 1.0 ? ` [RISK:${riskCheck.overflow.toFixed(1)}x]` : '';
+  const riskTag = '';
   const pos = {
     id: ++demoPosId, dir, entry: entryPrice, lots: adjLots, posUnits, margin,
     slPrice, tpPrice, slAmount, tpAmount, quality,
@@ -5464,37 +5443,15 @@ function checkDemoPositions() {
     if(pnl > 0) {
       wins++; consecutiveWins++; consecutiveLosses = 0;
       if(riskHalved) { riskHalved = false; addSignal('info',`Win — risk restored to normal (${consecutiveWins}W streak)`, null); }
-      // ── SURVIVAL ENGINE: Win clears any active pause (but not session lock — needs restart) ──
-      if(survivalPauseUntil > 0) {
-        survivalPauseUntil = 0;
-        addSignal('info', 'Survival pause cleared by win — scanning resumed', null);
-      }
     } else {
       losses++; consecutiveLosses++; consecutiveWins = 0;
       if(consecutiveLosses >= SAFETY.CONSEC_LOSS_HALVE) {
         riskHalved = true;
         addSignal('warn',`${consecutiveLosses}x consecutive losses — risk halved until next win`, null);
       }
-      // ── SURVIVAL ENGINE: Escalating loss-streak protection ──
-      if(consecutiveLosses === 3 && survivalPauseUntil === 0) {
-        survivalPauseUntil = Date.now() + 60 * 60 * 1000; // 1-hour pause
-        addSignal('warn', `3 consecutive losses — trading PAUSED for 1 hour (resumes ~${new Date(survivalPauseUntil).toLocaleTimeString()})`, null);
-      }
-      if(consecutiveLosses >= 4 && !survivalSessionLocked) {
-        survivalSessionLocked = true;
-        botOn = false; syncBotButtons();
-        addSignal('warn', '4 consecutive losses — SESSION LOCK activated. Press START to manually override.', null);
-      }
     }
     if(hardFloor > 0 && demoBalance <= hardFloor) {
       addSignal('warn',`[REPORT] HARD FLOOR REACHED — balance $${demoBalance.toFixed(2)}. Trading continues.`, null);
-    }
-    const startRef = Math.max(1, demoStartBal || 1);
-    const totalLoss = Math.max(0, startRef - demoBalance);
-    const ddPct = (totalLoss / startRef) * 100;
-    if(!tradingLocked && CFG.MAX_DD_PCT > 0 && ddPct >= CFG.MAX_DD_PCT) {
-      tradingLocked = true; botOn = false; syncBotButtons();
-      addSignal('warn',`Daily DD ${CFG.MAX_DD_PCT.toFixed(1)}% hit — lost $${totalLoss.toFixed(2)} this session. Bot locked.`, null);
     }
     const log = demoTradeLog.find(t=>t.id===pos.id);
     if(log) {
@@ -5634,7 +5591,6 @@ function loadSettings() {
     if(saved.MIN_LOT_SIZE)  CFG.MIN_LOT_SIZE  = saved.MIN_LOT_SIZE;
     if(saved.LEVERAGE)      CFG.LEVERAGE      = saved.LEVERAGE;
     if(saved.MAX_SPREAD_USD) CFG.MAX_SPREAD_USD = saved.MAX_SPREAD_USD;
-    if(saved.RISK_MODE)     CFG.RISK_MODE     = saved.RISK_MODE;
     if(saved.MAX_SL_PTS)    CFG.MAX_SL_PTS    = saved.MAX_SL_PTS;
     if(saved.TRAIL_ENABLED !== undefined) CFG.TRAIL_ENABLED = saved.TRAIL_ENABLED;
     if(saved.TRAIL_PHASE_1) CFG.TRAIL_PHASE_1 = saved.TRAIL_PHASE_1;
@@ -5675,7 +5631,6 @@ function loadSettings() {
   $('winRateDisplay').textContent = CFG.WIN_RATE_TGT+'%';
   $('ddDisplay').textContent      = CFG.MAX_DD_PCT.toFixed(1)+'%';
   updateSafetyDisplayValues();
-  updateRiskModeUI();
   if(CFG.DEMO_BALANCE > 0) resetHardFloor(CFG.DEMO_BALANCE);
   updateDepositNotice();
   updateStatsStrip();
@@ -5694,7 +5649,6 @@ function saveSettings() {
   if(CFG.MIN_LOT_SIZE > CFG.MAX_LOT_CAP) CFG.MIN_LOT_SIZE = CFG.MAX_LOT_CAP; // guard against inverted range
   CFG.LEVERAGE      = Math.max(1, parseFloat($('cfgLeverage').value) || 20);
   CFG.MAX_SPREAD_USD = Math.max(1, parseFloat($('cfgMaxSpread').value) || 30);
-  CFG.RISK_MODE     = CFG.RISK_MODE || 'REPORT';
   CFG.MAX_SL_PTS    = parseFloat($('cfgMaxSL').value)    || 450.0;
   CFG.TRAIL_ENABLED = $('cfgTrailEnabled').checked;
   CFG.TRAIL_PHASE_1 = parseInt($('cfgTrailPhase1').value) || 50;
@@ -5713,7 +5667,7 @@ function saveSettings() {
       RISK_PCT: CFG.RISK_PCT, WIN_RATE_TGT: CFG.WIN_RATE_TGT,
       MAX_DD_PCT: CFG.MAX_DD_PCT, RR: CFG.RR, MAX_LOT_CAP: CFG.MAX_LOT_CAP,
       MIN_LOT_SIZE: CFG.MIN_LOT_SIZE, LEVERAGE: CFG.LEVERAGE, MAX_SPREAD_USD: CFG.MAX_SPREAD_USD,
-      RISK_MODE: CFG.RISK_MODE, MAX_SL_PTS: CFG.MAX_SL_PTS,
+      MAX_SL_PTS: CFG.MAX_SL_PTS,
       TRAIL_ENABLED: CFG.TRAIL_ENABLED, TRAIL_PHASE_1: CFG.TRAIL_PHASE_1,
       TRAIL_PHASE_2: CFG.TRAIL_PHASE_2, TRAIL_PHASE_3: CFG.TRAIL_PHASE_3,
       TRAIL_DIST: CFG.TRAIL_DIST,
@@ -5807,40 +5761,8 @@ function updateSafetyDisplayValues() {
   $('dispMinMargin').textContent = mmp + '%';
 }
 
-// ── Risk Mode UI ──
-function setRiskMode(mode) {
-  CFG.RISK_MODE = mode;
-  updateRiskModeUI();
-}
-function updateRiskModeUI() {
-  const reportBtn = $('cfgRiskModeReport');
-  const blockBtn = $('cfgRiskModeBlock');
-  const hint = $('riskModeHint');
-  if(CFG.RISK_MODE === 'BLOCK') {
-    blockBtn.classList.add('active');
-    blockBtn.style.borderColor = 'var(--red-border)';
-    blockBtn.style.color = 'var(--red)';
-    blockBtn.style.background = 'var(--red-dim)';
-    reportBtn.classList.remove('active');
-    reportBtn.style.borderColor = 'var(--border2)';
-    reportBtn.style.color = 'var(--text2)';
-    reportBtn.style.background = 'transparent';
-    if(hint) hint.textContent = 'BLOCK mode: trades with risk > 1.5× target are REJECTED. Only safe sizes allowed.';
-  } else {
-    reportBtn.classList.add('active');
-    reportBtn.style.borderColor = 'var(--gold2)';
-    reportBtn.style.color = 'var(--gold)';
-    reportBtn.style.background = 'var(--gold-glow)';
-    blockBtn.classList.remove('active');
-    blockBtn.style.borderColor = 'var(--border2)';
-    blockBtn.style.color = 'var(--text2)';
-    blockBtn.style.background = 'transparent';
-    if(hint) hint.textContent = 'REPORT mode: warns on risk overflow but ALLOWS the trade. You see the mismatch in the signal feed.';
-  }
-}
-
-// ── RISK OVERFLOW CHECK ──
-// Returns { ok, lots, actualRisk, targetRisk, overflow, blocked, warning }
+// ── POSITION SIZING ──
+// Returns { ok, lots, actualRisk, targetRisk, riskPct, qMult, growthFactor, actualRiskPct }
 
 // ── RISK AUDIT UI UPDATE ──
 function updateRiskAudit(riskCheck, pos) {
@@ -5855,23 +5777,13 @@ function updateRiskAudit(riskCheck, pos) {
   const marginUsed = demoPositions.reduce((s,p) => s + (p.margin||0), 0);
   const marginLevel = marginUsed > 0 ? (equity / marginUsed) * 100 : 9999;
   $('raLevel').textContent = `${marginLevel.toFixed(1)}%`;
-  const overflowEl = $('raOverflow');
-  if(riskCheck.overflow > 1.5) {
-    overflowEl.textContent = `${riskCheck.overflow.toFixed(1)}×`;
-    overflowEl.style.color = 'var(--red)';
-  } else if(riskCheck.overflow > 1.0) {
-    overflowEl.textContent = `${riskCheck.overflow.toFixed(1)}×`;
-    overflowEl.style.color = 'var(--gold)';
-  } else {
-    overflowEl.textContent = `${riskCheck.overflow.toFixed(1)}×`;
-    overflowEl.style.color = 'var(--green)';
-  }
 }
 
 function checkRiskOverflow(slDist, quality, useBalance) {
+  // Position-sizing calc only — no overflow tracking, no blocking, no BLOCK mode.
   const bal = useBalance !== undefined ? useBalance : demoBalance;
   const startBal = demoStartBal || bal;
-  let riskPct = Math.min(CFG.RISK_PCT, SAFETY.MAX_RISK_CAP_PCT);
+  let riskPct = CFG.RISK_PCT;
   if(consecutiveLosses >= SAFETY.CONSEC_LOSS_HALVE) {
     const halvings = consecutiveLosses - SAFETY.CONSEC_LOSS_HALVE + 1;
     riskPct = riskPct / Math.pow(2, halvings);
@@ -5883,24 +5795,8 @@ function checkRiskOverflow(slDist, quality, useBalance) {
   const rawLots = slDist > 0 ? (targetRisk * qMult * growthFactor) / (slDist * CONTRACT_SIZE) : 0;
   const lots = Math.max(CFG.MIN_LOT_SIZE, Math.min(CFG.MAX_LOT_CAP, +rawLots.toFixed(2)));
   const actualRisk = lots * CONTRACT_SIZE * slDist;
-  const overflow = targetRisk > 0 ? actualRisk / targetRisk : 1;
-  // Min-lot enforcement check — raw lots below the configured floor means it inflated real risk
-  const minLotForced = rawLots < CFG.MIN_LOT_SIZE;
   const actualRiskPct = bal > 0 ? (actualRisk / bal) * 100 : 0;
-  // Hard-block when min-lot pushes actual risk past 5% safety cap — applies in BOTH modes
-  const safetyHardBlock = actualRiskPct > SAFETY.MAX_RISK_CAP_PCT;
-  const blocked = safetyHardBlock || (CFG.RISK_MODE === 'BLOCK' && overflow > 1.5);
-  // Min balance needed so min-lot risk equals target risk% with this SL distance
-  const minBalNeeded = riskPct > 0 ? Math.ceil((CFG.MIN_LOT_SIZE * CONTRACT_SIZE * slDist) / (riskPct / 100)) : 0;
-  let warning = '';
-  if(safetyHardBlock && minLotForced) {
-    warning = `BLOCKED — min lot forces actual risk $${actualRisk.toFixed(2)} (${actualRiskPct.toFixed(1)}% of $${bal.toFixed(0)}) which exceeds 5% safety cap. Need $${minBalNeeded}+ balance for ${slDist}pt SL at ${riskPct}% risk`;
-  } else if(minLotForced && overflow > 1.0) {
-    warning = `MIN LOT INFLATE: ${CFG.MIN_LOT_SIZE} lot forces $${actualRisk.toFixed(2)} real risk (${actualRiskPct.toFixed(1)}%) vs $${targetRisk.toFixed(2)} target. Need $${minBalNeeded}+ balance for these settings`;
-  } else if(overflow > 1.0) {
-    warning = `RISK OVERFLOW: ${(actualRisk/targetRisk*100).toFixed(0)}% actual vs ${riskPct.toFixed(1)}% target (${overflow.toFixed(1)}×)`;
-  }
-  return { ok: !blocked, lots, actualRisk, targetRisk, overflow, blocked, warning, riskPct, qMult, growthFactor, minLotForced, minBalNeeded, actualRiskPct };
+  return { ok: true, lots, actualRisk, targetRisk, riskPct, qMult, growthFactor, actualRiskPct };
 }
 
 // ── OANDA FEED ENGINE ──
@@ -6126,44 +6022,6 @@ function runStrategy() {
   if (candles[60].length < 20) return; // need enough M1 bars for ATR + structure
   const now = Date.now();
   if (now - lastSigMs < 1000) return;
-
-  // ── DRAWDOWN GUARD ──
-  const curBal   = authed ? balance : demoBalance;
-  const curStart = authed ? startBalance : demoStartBal;
-  if (CFG.MAX_DD_PCT > 0 && curStart > 0 && curBal !== null) {
-    const dd = ((curStart - curBal) / curStart) * 100;
-    if (dd >= CFG.MAX_DD_PCT) {
-      botOn = false; tradingLocked = true; syncBotButtons();
-      addSignal('warn', `Max drawdown ${CFG.MAX_DD_PCT}% reached. Bot stopped.`, null);
-      return;
-    }
-  }
-
-  // ── DEAD MARKET GUARD ──
-  const regime = detectMarketRegime();
-  if (regime === 'DEAD') return;
-
-  // ── SURVIVAL ENGINE: SESSION LOCK & HOURLY PAUSE ──
-  // Session lock requires a manual bot restart to clear — enforces a hard cool-down
-  // after 4 consecutive losses. Hourly pause auto-expires after 60 minutes.
-  if (survivalSessionLocked) {
-    if (now % 60000 < 1000) addSignal('warn', 'SESSION LOCK active — press START to override', null);
-    return;
-  }
-  if (survivalPauseUntil > 0) {
-    if (Date.now() < survivalPauseUntil) {
-      const remainMs  = survivalPauseUntil - Date.now();
-      const remainMin = Math.ceil(remainMs / 60000);
-      if (now % 60000 < 1000) addSignal('warn', `Survival pause — ${remainMin}min remaining`, null);
-      return;
-    }
-    // Pause expired — clear it and resume
-    survivalPauseUntil = 0;
-    addSignal('info', 'Survival pause expired — scanning resumed', null);
-  }
-
-  // ── SPREAD GUARD ──
-  if (!newsEngine.spreadOk()) return;
 
   // ── NEWS CONTEXT LOG (every 15 s) ──
   const newsMsg = newsEngine.getContextMessage();
@@ -6748,10 +6606,6 @@ const replay = {
     // minimum gap of 1 second enforced there is equivalent at M1 granularity.
     if (epoch - this.replayLastSigEpoch < 60) return;
 
-    // ── Market regime gate — mirrors runStrategy live gate ──
-    // DEAD markets have no meaningful price movement; skip them in backtest too.
-    if (detectMarketRegime() === 'DEAD') return;
-
     // ── Backtest news awareness — bot ALWAYS trades, adapts lot/spread to news context ──
     const ns = btNewsStateAt(epoch, this.newsEvents || []);
     // Log news context briefly (throttled to avoid spam)
@@ -6840,23 +6694,14 @@ const replay = {
     if (slDist < 15) return;
     const tpPrice = isBuy ? entryPrice + slDist * CFG.RR : entryPrice - slDist * CFG.RR;
 
-    // ── RISK OVERFLOW CHECK ──
+    // ── POSITION SIZING ──
     const riskCheck = checkRiskOverflow(slDist, sig.quality, this.replayBal);
-    if(riskCheck.blocked) {
-      addSignal('warn', `BT BLOCKED: Risk overflow ${riskCheck.overflow.toFixed(1)}× > 1.5× target`, price);
-      return;
-    }
-    if(riskCheck.warning) {
-      addSignal('warn', riskCheck.warning, price);
-    }
 
     // Risk pct modified by news lotMult
     let riskPct = riskCheck.riskPct * ns.lotMult;
     if (this.replayRiskHalved) riskPct /= 2;
-    const maxLoss = Math.max(0, this.replayBal - this.replayHardFloor);
-    const slAmount = Math.min(this.replayBal * riskPct / 100, maxLoss);
+    const slAmount = this.replayBal * riskPct / 100;
     const tpAmount = +(slAmount * CFG.RR).toFixed(2);
-    if (slAmount <= 0) return;
     let lots = +(slAmount / (slDist * CONTRACT_SIZE)).toFixed(2);
     lots = Math.max(CFG.MIN_LOT_SIZE, Math.min(CFG.MAX_LOT_CAP, lots));
 
@@ -6881,7 +6726,7 @@ const replay = {
     this.positions.push(pos);
     const grade = sig.quality >= 3 ? '★★★' : sig.quality === 2 ? '★★' : '★';
     const newsTag = ns.state !== 'NORMAL' ? ` [NEWS:${ns.state} sprd:$${dynSpread}]` : ` [sprd:$${dynSpread} slip:$${slip.toFixed(2)}]`;
-    const riskTag = riskCheck.overflow > 1.0 ? ` [RISK:${riskCheck.overflow.toFixed(1)}x]` : '';
+    const riskTag = '';
     addSignal(isBuy ? 'buy' : 'sell', `[BT] ${isBuy ? 'BUY' : 'SELL'} ${pos.lots.toFixed(2)}L ${grade}${newsTag}${riskTag} @ ${entryPrice.toFixed(2)}`, price);
   },
 
@@ -7792,12 +7637,6 @@ function _scanGapPositions() {
     }
     if (hardFloor > 0 && demoBalance <= hardFloor) {
       addSignal('warn', `[REPORT] HARD FLOOR REACHED — balance $${demoBalance.toFixed(2)}. Trading continues.`, null);
-    }
-    const startRef = Math.max(1, demoStartBal || 1);
-    const ddPct = (Math.max(0, startRef - demoBalance) / startRef) * 100;
-    if (!tradingLocked && CFG.MAX_DD_PCT > 0 && ddPct >= CFG.MAX_DD_PCT) {
-      tradingLocked = true; botOn = false; syncBotButtons();
-      addSignal('warn', `Daily DD ${CFG.MAX_DD_PCT.toFixed(1)}% hit — bot locked.`, null);
     }
     const log = demoTradeLog.find(t => t.id === pos.id);
     if (log) {
