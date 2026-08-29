@@ -1526,70 +1526,78 @@ const REFINED_STRATEGY_CFG = {
   // ---------- Liquidity ----------
   liquidity: {
     m5Lookback: 40,
-    swingStrength: 1,             // was 2 — accepts shallower/less-confirmed swing points as sweepable liquidity
-    minSweepDepthATR: 0.015,      // was 0.03 — accepts shallower sweeps
-    maxSweepDepthATR: 2.00,       // was 1.50 — allows deeper spike sweeps through
-    minReclaimATR: 0.03,          // was 0.05
-    minReclaimRatio: 0.08,        // was 0.15 — accepts a much shallower reclaim
-    maxLevelAgeBars: 80,          // was 55 — considers older swing levels
+    swingStrength: 1,
+    minSweepDepthATR: 0.008,      // was 0.015 — accepts near-trivial sweeps
+    maxSweepDepthATR: 2.50,       // was 2.00
+    minReclaimATR: 0.015,         // was 0.03
+    minReclaimRatio: 0.04,        // was 0.08
+    maxLevelAgeBars: 120,         // was 80
     minPreviousTouches: 1,
-    maxPreviousTouches: 12,       // was 8 — allows more-tested levels through
-    preferFreshLiquidity: true
+    maxPreviousTouches: 16,       // was 12
+    preferFreshLiquidity: true,
+    // NEW — scans the last N completed M5 bars for a sweep, not just the
+    // single most-recent bar. This was the main reason 0 trades ever fired:
+    // a valid sweep 2-3 bars back was being silently discarded.
+    sweepRecencyBars: 4
   },
 
   // ---------- Existing M1 structure machinery ----------
   structure: {
-    lookback: 20,                 // was 16 — wider swing-reference window
-    minBreakATR: 0.03,            // was 0.05
-    minCloseStrength: 0.36,       // was 0.48 — less extreme close required
-    minBodyRatio: 0.28,           // was 0.38 — tolerates smaller-bodied candles
+    lookback: 26,                 // was 20
+    minBreakATR: 0.015,           // was 0.03
+    minCloseStrength: 0.25,       // was 0.36
+    minBodyRatio: 0.18,           // was 0.28
     requireCloseBeyondSwing: true,
-    maxBarsAfterSweep: 24         // was 16 — much more time allowed for BMS to follow the sweep
+    maxBarsAfterSweep: 36          // was 24
   },
 
   // ---------- Order block ----------
   orderBlock: {
-    lookback: 26,                 // was 20
-    maxAgeBars: 34,                // was 22
-    maxMitigations: 4,             // was 2 — tolerates more touches before invalidating
-    maxOBRangeATR: 2.20,           // was 1.50
-    minOBRangeATR: 0.02,           // was 0.04
+    lookback: 32,                 // was 26
+    maxAgeBars: 50,                // was 34
+    maxMitigations: 6,             // was 4
+    maxOBRangeATR: 2.80,           // was 2.20
+    minOBRangeATR: 0.01,           // was 0.02
     mustLeadToBMS: true,
-    originDistanceBars: 10         // was 6
+    originDistanceBars: 14          // was 10
   },
 
   // ---------- FVG / imbalance ----------
   fvg: {
-    lookback: 22,                  // was 16
-    maxAgeBars: 24,                 // was 16
-    minGapATR: 0.01,                // was 0.02
+    lookback: 28,                  // was 22
+    maxAgeBars: 32,                 // was 24
+    minGapATR: 0.005,               // was 0.01
     preferFresh: true,
     overlapBonus: true
   },
 
   // ---------- Retracement ----------
   retracement: {
-    preferredMin: 0.15,             // was 0.20
-    preferredMax: 0.60,             // was 0.50
-    acceptableMin: 0.05,            // was 0.10 — much wider acceptable band
-    acceptableMax: 0.85,            // was 0.72
+    // preferredMin/Max define the ACTUAL tradeable zone (price must sit
+    // inside this band to fire at all) — this is the main lever for trade
+    // frequency, not acceptableMin/Max below (that only affects the score
+    // AFTER price is already in the zone). Widened dramatically.
+    preferredMin: 0.05,             // was 0.15
+    preferredMax: 0.85,             // was 0.60
+    acceptableMin: 0.02,            // was 0.05
+    acceptableMax: 0.95,            // was 0.85
     useFVGOverlapWhenPresent: true,
-    minZoneWidthATR: 0.01,          // was 0.02
-    maxZoneWidthATR: 1.40           // was 1.00
+    minZoneWidthATR: 0.005,         // was 0.01
+    maxZoneWidthATR: 1.80           // was 1.40
   },
 
   // ---------- Setup sequence ----------
   sequence: {
-    maxSetupAgeMinutes: 60,               // was 35 — setups stay valid longer before expiring
-    maxBarsBetweenSweepAndBMS: 24,        // was 16
-    maxBarsBetweenBMSAndRetrace: 40       // was 28
+    maxSetupAgeMinutes: 90,               // was 60
+    maxBarsBetweenSweepAndBMS: 36,        // was 24
+    maxBarsBetweenBMSAndRetrace: 60       // was 40
   },
 
   // ---------- Quality engine ----------
   quality: {
-    minimumScore: 40,   // was 58 — main lever for trade frequency; lower = more trades, weaker average edge
-    strongScore: 58,    // was 70 — shifted down with the floor to preserve tier spacing
-    premiumScore: 75,   // was 82
+    minimumScore: 25,   // was 40 — main lever for trade frequency; lower = more trades, weaker average edge
+    strongScore: 45,    // was 58
+    premiumScore: 65,   // was 75
 
     weights: {
       liquidity: 20,
@@ -1638,8 +1646,8 @@ const REFINED_STRATEGY_CFG = {
   // ---------- Execution ----------
   execution: {
     onePositionAtATime: false,       // kept for backward compatibility
-    maxConcurrentPositions: 2,       // was 1 — lets a second setup fire while one is still open
-    duplicateCooldownMs: 90000,      // was 210000 (3.5min) — shorter cooldown between re-entries
+    maxConcurrentPositions: 3,       // was 2
+    duplicateCooldownMs: 45000,      // was 90000
     duplicatePriceTolerance: 0.21
   },
 
@@ -1805,117 +1813,135 @@ const RefinedStrategy = (() => {
 
     // Use completed M5 candles only.
     const completed = bars.length > 1 ? bars.slice(0, -1) : bars;
-    const current = completed[completed.length - 1];
-    if (!current) return null;
+    if (!completed.length) return null;
 
     const currentATR = atr(completed, 14);
     const lookback = Math.min(C.liquidity.m5Lookback, completed.length - 1);
 
+    // FIX: previously this only ever checked the single most-recent completed
+    // M5 bar as the "sweep candle" — a sweep that happened 2-3 bars ago is
+    // just as tradeable, but was being silently missed entirely. Scan a
+    // small recency window of recent completed bars instead of just the last one.
+    const recencyWindow = Math.max(1, C.liquidity.sweepRecencyBars || 1);
+    const candScanStart = Math.max(2, completed.length - recencyWindow);
+
     let candidates = [];
 
-    for (let i = Math.max(2, completed.length - lookback - 1);
-         i < completed.length - 2;
-         i++) {
+    for (let ci = candScanStart; ci < completed.length; ci++) {
+      const current = completed[ci];
+      if (!current) continue;
 
-      if (direction === "BUY" && !isSwingLow(completed, i, C.liquidity.swingStrength)) continue;
-      if (direction === "SELL" && !isSwingHigh(completed, i, C.liquidity.swingStrength)) continue;
+      for (let i = Math.max(2, ci - lookback); i < ci - 1; i++) {
 
-      const level = direction === "BUY"
-        ? completed[i].low
-        : completed[i].high;
+        if (direction === "BUY" && !isSwingLow(completed, i, C.liquidity.swingStrength)) continue;
+        if (direction === "SELL" && !isSwingHigh(completed, i, C.liquidity.swingStrength)) continue;
 
-      let touches = 0;
+        const level = direction === "BUY"
+          ? completed[i].low
+          : completed[i].high;
 
-      for (let j = Math.max(0, i - 20); j < i; j++) {
-        const tol = Math.max(currentATR * 0.03, 0.01);
-        if (Math.abs((direction === "BUY" ? completed[j].low : completed[j].high) - level) <= tol) {
-          touches++;
+        let touches = 0;
+
+        for (let j = Math.max(0, i - 20); j < i; j++) {
+          const tol = Math.max(currentATR * 0.03, 0.01);
+          if (Math.abs((direction === "BUY" ? completed[j].low : completed[j].high) - level) <= tol) {
+            touches++;
+          }
         }
+
+        const ageBars = ci - i;
+
+        if (ageBars > C.liquidity.maxLevelAgeBars) continue;
+
+        const sweepDepth = direction === "BUY"
+          ? level - current.low
+          : current.high - level;
+
+        const reclaim = direction === "BUY"
+          ? current.close - level
+          : level - current.close;
+
+        const depthATR = currentATR > 0 ? sweepDepth / currentATR : 0;
+        const reclaimATR = currentATR > 0 ? reclaim / currentATR : 0;
+
+        const currentRange = range(current);
+        const reclaimRatio = currentRange > 0
+          ? reclaim / currentRange
+          : 0;
+
+        // BUY: price must trade below sell-side liquidity and reclaim above it.
+        // SELL: price must trade above buy-side liquidity and reclaim below it.
+        const swept = direction === "BUY"
+          ? current.low < level && current.close > level
+          : current.high > level && current.close < level;
+
+        if (!swept) continue;
+
+        if (depthATR < C.liquidity.minSweepDepthATR) continue;
+        if (depthATR > C.liquidity.maxSweepDepthATR) continue;
+        if (reclaimATR < C.liquidity.minReclaimATR) continue;
+        if (reclaimRatio < C.liquidity.minReclaimRatio) continue;
+
+        const freshness = clamp(
+          1 - ageBars / Math.max(1, C.liquidity.maxLevelAgeBars),
+          0,
+          1
+        );
+
+        const touchScore = clamp(
+          touches / Math.max(1, C.liquidity.maxPreviousTouches),
+          0,
+          1
+        );
+
+        const depthScore = clamp(
+          (depthATR - C.liquidity.minSweepDepthATR) /
+          Math.max(0.01, C.liquidity.maxSweepDepthATR - C.liquidity.minSweepDepthATR),
+          0,
+          1
+        );
+
+        const reclaimScore = clamp(
+          reclaimRatio / 0.75,
+          0,
+          1
+        );
+
+        // Recency bonus — a sweep on the most recent bar scores marginally
+        // higher than one a couple of bars back, all else equal.
+        const recencyScore = clamp(
+          1 - (completed.length - 1 - ci) / Math.max(1, recencyWindow),
+          0,
+          1
+        );
+
+        const quality = Math.round(
+          20 * (
+            freshness * 0.20 +
+            touchScore * 0.12 +
+            depthScore * 0.20 +
+            reclaimScore * 0.30 +
+            recencyScore * 0.18
+          )
+        );
+
+        candidates.push({
+          type: direction === "BUY" ? "SELL_SIDE_SWEEP" : "BUY_SIDE_SWEEP",
+          direction,
+          level,
+          index: i,
+          epoch: completed[i].epoch,
+          candle: current,
+          sweepDepth,
+          depthATR,
+          reclaim,
+          reclaimATR,
+          reclaimRatio,
+          touches,
+          ageBars,
+          quality
+        });
       }
-
-      const ageBars = completed.length - 1 - i;
-
-      if (ageBars > C.liquidity.maxLevelAgeBars) continue;
-
-      const sweepDepth = direction === "BUY"
-        ? level - current.low
-        : current.high - level;
-
-      const reclaim = direction === "BUY"
-        ? current.close - level
-        : level - current.close;
-
-      const depthATR = currentATR > 0 ? sweepDepth / currentATR : 0;
-      const reclaimATR = currentATR > 0 ? reclaim / currentATR : 0;
-
-      const currentRange = range(current);
-      const reclaimRatio = currentRange > 0
-        ? reclaim / currentRange
-        : 0;
-
-      // BUY: price must trade below sell-side liquidity and reclaim above it.
-      // SELL: price must trade above buy-side liquidity and reclaim below it.
-      const swept = direction === "BUY"
-        ? current.low < level && current.close > level
-        : current.high > level && current.close < level;
-
-      if (!swept) continue;
-
-      if (depthATR < C.liquidity.minSweepDepthATR) continue;
-      if (depthATR > C.liquidity.maxSweepDepthATR) continue;
-      if (reclaimATR < C.liquidity.minReclaimATR) continue;
-      if (reclaimRatio < C.liquidity.minReclaimRatio) continue;
-
-      const freshness = clamp(
-        1 - ageBars / Math.max(1, C.liquidity.maxLevelAgeBars),
-        0,
-        1
-      );
-
-      const touchScore = clamp(
-        touches / Math.max(1, C.liquidity.maxPreviousTouches),
-        0,
-        1
-      );
-
-      const depthScore = clamp(
-        (depthATR - C.liquidity.minSweepDepthATR) /
-        Math.max(0.01, C.liquidity.maxSweepDepthATR - C.liquidity.minSweepDepthATR),
-        0,
-        1
-      );
-
-      const reclaimScore = clamp(
-        reclaimRatio / 0.75,
-        0,
-        1
-      );
-
-      const quality = Math.round(
-        20 * (
-          freshness * 0.25 +
-          touchScore * 0.15 +
-          depthScore * 0.25 +
-          reclaimScore * 0.35
-        )
-      );
-
-      candidates.push({
-        type: direction === "BUY" ? "SELL_SIDE_SWEEP" : "BUY_SIDE_SWEEP",
-        direction,
-        level,
-        index: i,
-        epoch: completed[i].epoch,
-        candle: current,
-        sweepDepth,
-        depthATR,
-        reclaim,
-        reclaimATR,
-        reclaimRatio,
-        touches,
-        ageBars,
-        quality
-      });
     }
 
     if (!candidates.length) return null;
