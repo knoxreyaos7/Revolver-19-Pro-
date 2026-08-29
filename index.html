@@ -1113,7 +1113,7 @@ const CFG = {
   LEVERAGE     : 20,          // account leverage — tune to your broker/exchange's actual BTCUSD leverage cap
   MAX_SPREAD_USD: 30,         // reference only — spread guard removed, trades no longer gated on this
   MAX_SL_PTS   : 450.0,       // Hard cap on SL distance in $ (rescaled for BTCUSD's price magnitude — tune to live ATR)
-  MAX_CONCURRENT_POS: 5,      // how many trades the bot can hold open at once — raised from 1 so more setups can fire
+  MAX_CONCURRENT_POS: 2,      // how many trades the bot can hold open at once — trend-filtered signals tend to be same-direction, so kept modest to avoid stacking correlated risk
   // ── Three-Phase Trailing Stop ──
   TRAIL_ENABLED: true,
   TRAIL_PHASE_1: 60,          // % to TP for BE lock — raised from 50% to avoid premature BE on volatility
@@ -1583,9 +1583,9 @@ const REFINED_STRATEGY_CFG = {
 
   // ---------- Quality engine ----------
   quality: {
-    minimumScore: 10,   // was 25 — main lever for trade frequency; lower = more trades, weaker average edge
-    strongScore: 25,    // was 45
-    premiumScore: 45,   // was 65
+    minimumScore: 25,   // restored — the trend filter now does the main filtering, so this just screens out the weakest setups
+    strongScore: 45,
+    premiumScore: 65,
 
     weights: {
       liquidity: 20,
@@ -1740,6 +1740,33 @@ const RefinedStrategy = (() => {
     let sum = 0;
     for (let i = trs.length - n; i < trs.length; i++) sum += trs[i];
     return n ? sum / n : 0;
+  }
+
+  // ── SIMPLE TREND FILTER (EMA21 vs EMA50 on M5 closes) ──
+  // This is the one rule that gives the strategy an actual directional edge:
+  // only take BUY setups while the higher-timeframe trend is up, only take
+  // SELL setups while it's down. Easy to reason about, cheap to compute.
+  function emaSeries(values, period) {
+    if (!values.length) return [];
+    const k = 2 / (period + 1);
+    const out = [values[0]];
+    for (let i = 1; i < values.length; i++) {
+      out.push(values[i] * k + out[i - 1] * (1 - k));
+    }
+    return out;
+  }
+
+  function getTrendBias(m5) {
+    if (!m5 || m5.length < 55) return "NONE"; // not enough M5 history — stay neutral
+    const closes = m5.slice(0, -1).map(c => c.close); // exclude forming bar
+    if (closes.length < 55) return "NONE";
+    const ema21 = emaSeries(closes, 21);
+    const ema50 = emaSeries(closes, 50);
+    const fast = ema21[ema21.length - 1];
+    const slow = ema50[ema50.length - 1];
+    if (fast > slow) return "BULL";
+    if (fast < slow) return "BEAR";
+    return "NONE";
   }
 
   function highest(arr, start, end, field = "high") {
@@ -2601,6 +2628,18 @@ const RefinedStrategy = (() => {
         signal: false,
         reason: "INSUFFICIENT_DATA",
         direction,
+        quality: null
+      };
+    }
+
+    // ── SIMPLE TREND FILTER — only trade with the M5 trend ──
+    const trend = getTrendBias(m5);
+    if (trend !== "NONE" && ((isBuy && trend === "BEAR") || (!isBuy && trend === "BULL"))) {
+      return {
+        signal: false,
+        reason: "AGAINST_TREND",
+        direction,
+        trend,
         quality: null
       };
     }
