@@ -729,7 +729,7 @@ input[type=range]::-webkit-slider-thumb{
         <div class="field-hint">Account leverage for BTCUSD. Controls required margin per trade — higher leverage allows larger positions on the same balance.</div>
       </div>
       <div class="field">
-        <label>Profit Target</label>
+        <label>Daily Profit Target</label>
         <div class="field-row">
           <input class="finput" type="number" id="cfgProfitTarget" placeholder="e.g. 500" min="1" step="1"/>
           <span class="funit">USD</span>
@@ -739,7 +739,7 @@ input[type=range]::-webkit-slider-thumb{
           <div class="target-bar-track"><div class="target-bar-fill" id="targetBarFill" style="width:0%"></div></div>
           <span style="font-size:9px;color:var(--text3);white-space:nowrap" id="targetBarLabel">—</span>
         </div>
-        <div class="field-hint">Each time floating profit reaches this amount, it gets locked into a vault and the working balance drops back down — see Profit Lock below.</div>
+        <div class="field-hint">Measured against today's opening balance and resets automatically at the start of each new calendar day. Each time today's profit reaches this amount, it gets locked into a vault and the bot keeps trading from the reduced balance — see Profit Lock below.</div>
       </div>
       <div class="field">
         <label style="display:flex;align-items:center;justify-content:space-between">
@@ -751,7 +751,7 @@ input[type=range]::-webkit-slider-thumb{
           <input class="finput" type="number" id="cfgProfitLockKeepPct" placeholder="30" min="0" max="100" step="5" style="width:60px"/>
           <span class="funit">%</span>
         </div>
-        <div class="field-hint">1st time the profit target is hit, 100% of that profit is locked away and the bot keeps trading on the reset balance. From the 2nd hit onward, only this % of each new profit chunk stays in play — the rest keeps getting locked.</div>
+        <div class="field-hint">1st time the daily target is hit, 100% of that profit is locked away and the bot keeps trading on the reset balance. From the 2nd hit that day onward, only this % of each new profit chunk stays in play — the rest keeps getting locked. Hit count and progress reset every new day.</div>
       </div>
     </div>
     <div class="settings-section">
@@ -967,7 +967,67 @@ input[type=range]::-webkit-slider-thumb{
         <div class="field-hint">% of free margin that must remain un-used. Higher = safer from margin calls. Lower = larger possible positions.</div>
       </div>
 
+      <!-- Max Concurrent Positions -->
+      <div class="field">
+        <label>Max Concurrent Positions</label>
+        <div class="range-wrap">
+          <div class="range-display">
+            <span class="range-val" id="maxConcurDisplay">2</span>
+            <span class="range-bounds">1 — 10</span>
+          </div>
+          <input type="range" id="cfgMaxConcurPos" min="1" max="10" step="1" value="2"/>
+        </div>
+        <div class="field-hint">How many trades the bot can hold open at once. Higher allows more simultaneous exposure.</div>
+      </div>
+
       <div class="field-hint" style="margin-top:8px;line-height:1.6">All layers operate <strong style="color:var(--gold)">below</strong> your main settings — they cannot be overridden. The bot auto-adjusts lot sizes, halves risk on losing streaks, and hard-stops if the floor is approached.</div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">⚙ Advanced Size Multipliers</div>
+      <div class="field-hint" style="margin-bottom:10px;line-height:1.6">These stack on top of your base lot size — regime and session multipliers scale risk down in choppier/thinner conditions, growth cap limits how much a winning streak can compound position size. Defaults match how the bot has always behaved; only change these if you know what you're adjusting.</div>
+      <div class="field">
+        <label>Balance-Growth Size Cap</label>
+        <div class="field-row"><input class="finput" type="number" id="cfgGrowthCap" min="1" max="5" step="0.1"/><span class="funit">×</span></div>
+        <div class="field-hint">Max size multiplier from account growth (√(balance/starting balance), capped here).</div>
+      </div>
+      <div class="field">
+        <label>Regime Size Multipliers</label>
+        <div class="field-row" style="gap:6px;flex-wrap:wrap">
+          <span style="font-size:9px;color:var(--text3)">Trend</span><input class="finput" type="number" id="cfgRegimeTrend" min="0" max="2" step="0.05" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">Range</span><input class="finput" type="number" id="cfgRegimeRange" min="0" max="2" step="0.05" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">Dead</span><input class="finput" type="number" id="cfgRegimeDead" min="0" max="2" step="0.05" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">Neutral</span><input class="finput" type="number" id="cfgRegimeNeutral" min="0" max="2" step="0.05" style="width:56px"/>
+        </div>
+        <div class="field-hint">Size scaling by detected market regime.</div>
+      </div>
+      <div class="field">
+        <label>Session Size Multipliers</label>
+        <div class="field-row" style="gap:6px;flex-wrap:wrap">
+          <span style="font-size:9px;color:var(--text3)">London</span><input class="finput" type="number" id="cfgSessionLondon" min="0" max="2" step="0.05" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">NY</span><input class="finput" type="number" id="cfgSessionNY" min="0" max="2" step="0.05" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">Asian</span><input class="finput" type="number" id="cfgSessionAsian" min="0" max="2" step="0.05" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">Off-hrs</span><input class="finput" type="number" id="cfgSessionOff" min="0" max="2" step="0.05" style="width:56px"/>
+        </div>
+        <div class="field-hint">Size scaling by trading session.</div>
+      </div>
+      <div class="field">
+        <label>Signal-Quality Size Multipliers</label>
+        <div class="field-row" style="gap:6px;flex-wrap:wrap">
+          <span style="font-size:9px;color:var(--text3)">★</span><input class="finput" type="number" id="cfgQual1" min="0" max="3" step="0.1" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">★★</span><input class="finput" type="number" id="cfgQual2" min="0" max="3" step="0.1" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">★★★</span><input class="finput" type="number" id="cfgQual3" min="0" max="3" step="0.1" style="width:56px"/>
+        </div>
+        <div class="field-hint">Size scaling by signal quality grade.</div>
+      </div>
+      <div class="field">
+        <label>News-Window Lot Multipliers</label>
+        <div class="field-row" style="gap:6px;flex-wrap:wrap">
+          <span style="font-size:9px;color:var(--text3)">Pre-release</span><input class="finput" type="number" id="cfgNewsPre" min="0" max="2" step="0.05" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">Post-release</span><input class="finput" type="number" id="cfgNewsPost" min="0" max="2" step="0.05" style="width:56px"/>
+          <span style="font-size:9px;color:var(--text3)">Aware</span><input class="finput" type="number" id="cfgNewsAware" min="0" max="2" step="0.05" style="width:56px"/>
+        </div>
+        <div class="field-hint">Lot size scaling around scheduled news events.</div>
+      </div>
     </div>
     <button class="btn btn-gold" onclick="saveSettings()">Save &amp; Apply</button>
     <div id="settingsSaved" style="text-align:center;font-size:10px;color:var(--green);margin-top:8px;opacity:0;transition:opacity .3s">✓ Settings applied — demo account funded</div>
@@ -1138,6 +1198,29 @@ const CFG = {
   MAX_SPREAD_USD: 30,         // reference only — spread guard removed, trades no longer gated on this
   MAX_SL_PTS   : 450.0,       // Hard cap on SL distance in $ (rescaled for BTCUSD's price magnitude — tune to live ATR)
   MAX_CONCURRENT_POS: 2,      // how many trades the bot can hold open at once — trend-filtered signals tend to be same-direction, so kept modest to avoid stacking correlated risk
+  // Portfolio-heat cap, in R multiples (1R = one trade's quality-multiplier-
+  // boosted risk). Since this bot only trades BTCUSD, concurrent positions
+  // are highly correlated — this stops the per-trade quality size bonus from
+  // compounding unchecked across them. Never rejects a trade outright, only
+  // scales its size multiplier down (MIN_LOT_SIZE floor still applies), so
+  // trade count/day is unaffected — only how big each stacked trade is.
+  MAX_PORTFOLIO_HEAT_R: 2.0,
+  // ── Position-Sizing Multipliers (user-configurable) ──
+  GROWTH_FACTOR_CAP  : 1.5,   // cap on the balance-growth size multiplier (sqrt(bal/startBal))
+  REGIME_MULT_TREND  : 1.0,   // size multiplier — EXPANSION/TREND market regime
+  REGIME_MULT_RANGE  : 0.50,  // size multiplier — RANGE market regime
+  REGIME_MULT_DEAD   : 0.25,  // size multiplier — DEAD market regime
+  REGIME_MULT_NEUTRAL: 0.75,  // size multiplier — NEUTRAL/UNKNOWN market regime
+  SESSION_MULT_LONDON  : 1.0, // size multiplier — London session
+  SESSION_MULT_NY      : 0.85,// size multiplier — New York session
+  SESSION_MULT_ASIAN   : 0.45,// size multiplier — Asian session
+  SESSION_MULT_OFFHOURS: 0.50,// size multiplier — off-hours
+  QUALITY_MULT_1: 1.0,        // size multiplier — 1★ signal quality
+  QUALITY_MULT_2: 1.5,        // size multiplier — 2★ signal quality
+  QUALITY_MULT_3: 2.0,        // size multiplier — 3★ signal quality
+  NEWS_MULT_PRE  : 0.60,      // lot multiplier — PRE_RELEASE news window
+  NEWS_MULT_POST : 1.20,      // lot multiplier — POST_RELEASE news window
+  NEWS_MULT_AWARE: 0.80,      // lot multiplier — AWARE (approaching/minor) news window
   // ── Three-Phase Trailing Stop ──
   TRAIL_ENABLED: true,
   TRAIL_PHASE_1: 60,          // % to TP for BE lock — raised from 50% to avoid premature BE on volatility
@@ -1185,9 +1268,10 @@ let demoPositions   = [];
 let demoTradeLog    = [];
 
 // ── Profit Lock state ──
-let lockedProfit       = 0;   // cumulative $ swept into the vault — never used for position sizing
-let profitLockHits     = 0;   // how many times the profit target has been reached
-let profitLockBaseline = 0;   // working balance is measured against this since the last lock event
+let lockedProfit       = 0;   // cumulative $ swept into the vault — never used for position sizing — NEVER resets
+let profitLockHits     = 0;   // how many times TODAY's profit target has been reached — resets each new day
+let profitLockBaseline = 0;   // working balance is measured against this since the last lock event (or day start)
+let profitLockDay      = null; // calendar day (toDateString()) that profitLockBaseline/profitLockHits currently track
 
 let liveEquity      = [];   // balance snapshot after each closed live trade
 let liveMaxBal      = 0;    // peak balance for live DD calculation
@@ -1557,7 +1641,10 @@ const REFINED_STRATEGY_CFG = {
     avoidDeadRegime: true,   // skip only near-zero-volatility conditions, where any "breakout" is just spread noise
     avoidNewsRelease: true,  // skip only the actual ±5min high-impact release window (spread spikes/fake wicks)
     roomLookbackBars: 25,    // window used to check for a nearby opposing swing extreme ahead of the trade
-    minRoomATR: 0.5          // require at least this many ATRs of clear space before the nearest opposing extreme
+    minRoomATR: 0.8          // was 0.5 — require more clear runway before the nearest opposing extreme;
+                              // this is a continuous score/gate input off breakout candles that already
+                              // pass every other check, so it costs relatively few trades/day while cutting
+                              // the setups most likely to reverse immediately into resistance/support
   },
 
   // ---------- Liquidity (kept for chart zone drawing / backtesting tools only — no longer gates entries) ----------
@@ -2790,22 +2877,42 @@ const RefinedStrategy = (() => {
     // ── Dynamic quality score (0-100) — replaces the old flat 70. Feeds
     // calculatePositionSize()'s existing quality multiplier, so stronger
     // setups are sized up a bit and weak ones a bit down; both still trade.
+    //
+    // REWEIGHTED — breakout body/overshoot is the noisiest input (1-min
+    // candle noise), so its ceiling was trimmed from 60→45. Trend alignment
+    // and room-to-run are the more genuinely predictive filters for
+    // follow-through, so their ceilings were raised (20→25, 5→15). This
+    // doesn't change which setups pass minimumScore much — it changes how
+    // setups are *ranked*, which now matters more since grade drives RR,
+    // position size, and trail behavior.
     const overshoot = isBuy ? (last.close - recentHigh) : (recentLow - last.close);
     const overshootATR = currentATR > 0 ? clamp(overshoot / currentATR, 0, 1) : 0;
-    const breakoutScore = clamp(bodyRatio, 0, 1) * 40 + overshootATR * 20;         // up to 60
+    const breakoutScore = clamp(bodyRatio, 0, 1) * 30 + overshootATR * 15;         // up to 45
 
     const trend = (C.simple.useTrendFilter || m5.length >= 55) ? getTrendBias(m5) : "NONE";
     const aligned = (isBuy && trend === "BULL") || (!isBuy && trend === "BEAR");
-    const trendScore = trend === "NONE" ? 10 : (aligned ? 20 : 0);                  // up to 20
+    const trendScore = trend === "NONE" ? 12 : (aligned ? 25 : 0);                  // up to 25
 
     const regimeScore = (regime === "EXPANSION" || regime === "TREND") ? 15
                        : regime === "RANGE" ? 5 : 0;                                // up to 15
 
     const roomScore = Number.isFinite(roomATR)
-      ? clamp(roomATR / 3, 0, 1) * 5
-      : 5;                                                                          // up to 5
+      ? clamp(roomATR / 3, 0, 1) * 15
+      : 15;                                                                         // up to 15
 
-    const scoreTotal = clamp(breakoutScore + trendScore + regimeScore + roomScore, 0, 100);
+    // ── Wick-rejection penalty — a breakout candle that closes strongly but
+    // leaves a large wick on the OPPOSITE side (e.g. a bull breakout with a
+    // long upper wick) is showing real-time rejection at the extreme, a
+    // classic fakeout tell. This doesn't gate the trade out — it only pulls
+    // down the score/grade, so the trade still fires but gets a shorter RR
+    // target, smaller size, and earlier profit-lock via the grade wiring.
+    const oppWick = isBuy
+      ? last.high - Math.max(last.open, last.close)
+      : Math.min(last.open, last.close) - last.low;
+    const oppWickRatio = barRange > 0 ? clamp(oppWick / barRange, 0, 1) : 0;
+    const wickPenalty = clamp(oppWickRatio - 0.15, 0, 0.55) * 20;                   // 0 to -11
+
+    const scoreTotal = clamp(breakoutScore + trendScore + regimeScore + roomScore - wickPenalty, 0, 100);
     const approved = scoreTotal >= C.quality.minimumScore;
 
     if (!approved) {
@@ -2841,7 +2948,7 @@ const RefinedStrategy = (() => {
       total: scoreTotal,
       grade,
       approved: true,
-      components: { breakout: breakoutScore, trend: trendScore, regime: regimeScore, room: roomScore }
+      components: { breakout: breakoutScore, trend: trendScore, regime: regimeScore, room: roomScore, wickPenalty }
     };
 
     return {
@@ -4127,6 +4234,12 @@ const strategy = {
       // original bot's "SL at sweep candle low/high" spec.
       slRef: r.sweep ? { low: r.sweep.candle.low, high: r.sweep.candle.high } : null,
       conds,
+      // NEW — raw 0-100 quality score (undithered by the 1/2/3 legacy bucket)
+      // and the raw setup object, so the execution boundary can call
+      // RefinedStrategy.calculateTradeGeometry()/calculatePositionSize()
+      // instead of re-deriving SL/TP/size from scratch.
+      qualityScore: r.quality ? r.quality.total : null,
+      raw: r,
     };
   },
   evalBuy(price)  { return this._eval('BUY', price); },
@@ -5162,9 +5275,9 @@ const newsEngine = {
   // Lot size multiplier based on news state
   lotMultiplier() {
     switch (this.state) {
-      case 'PRE_RELEASE':  return 0.60;  // release window — reduced risk on spike
-      case 'POST_RELEASE': return 1.20;  // momentum mode — slight boost for trend trades
-      case 'AWARE':        return 0.80;  // approaching/minor — slight caution
+      case 'PRE_RELEASE':  return CFG.NEWS_MULT_PRE;    // release window — reduced risk on spike
+      case 'POST_RELEASE': return CFG.NEWS_MULT_POST;   // momentum mode — slight boost for trend trades
+      case 'AWARE':        return CFG.NEWS_MULT_AWARE;  // approaching/minor — slight caution
       default:             return 1.00;
     }
   },
@@ -5205,7 +5318,22 @@ const newsEngine = {
 };
 
 // ── DYNAMIC LOT SIZING ──
-const QUALITY_MULT = { 1: 1.0, 2: 1.5, 3: 2.0 };
+function qualityMult(q) {
+  const m = { 1: CFG.QUALITY_MULT_1, 2: CFG.QUALITY_MULT_2, 3: CFG.QUALITY_MULT_3 };
+  return m[Math.max(1, Math.min(3, q))] || 1.0;
+}
+
+// NEW — continuous 0-100 score based multiplier (smooth 1.0x-1.35x), same
+// curve as RefinedStrategy.calculatePositionSize's internal formula, so a
+// score of 66 and a score of 99 don't get identical size just because both
+// land in the same 1/2/3-star bucket. Used when a raw score is available;
+// falls back to the coarse legacy bucket (qualityMult) otherwise so nothing
+// breaks for callers that don't have a score (e.g. older log replays).
+function qualityMultContinuous(score) {
+  if (!Number.isFinite(score)) return null;
+  const clamped = Math.max(0, Math.min(100, score));
+  return Math.max(1.0, Math.min(1.35, 1 + Math.max(0, clamped - 65) * 0.006));
+}
 
 function calcDynamicLots(slDist, quality, useBalance, useStartBal) {
   const bal = useBalance !== undefined ? useBalance : demoBalance;
@@ -5220,7 +5348,7 @@ function calcDynamicLots(slDist, quality, useBalance, useStartBal) {
     ? Math.max(0, (bal - hardFloor) * 0.80)
     : bal;
   const baseRisk = Math.min(bal * riskPct / 100, tradeableCapital * riskPct / 100);
-  const qMult = QUALITY_MULT[Math.max(1, Math.min(3, quality))] || 1.0;
+  const qMult = qualityMult(quality);
   const growthFactor = startBal > 0 ? Math.min(1.5, Math.sqrt(bal / startBal)) : 1.0;
 
   // ── SURVIVAL ENGINE: Market regime risk scaling ──
@@ -5264,7 +5392,7 @@ function calcDynamicLots(slDist, quality, useBalance, useStartBal) {
 }
 
 // ── DEMO TRADE PLACEMENT ──
-function placeDemoTrade(dir, ob, quality = 1) {
+function placeDemoTrade(dir, ob, quality = 1, rawSetup = null, qualityScore = null) {
   if(!mid) return;
   if(demoBalance <= 0) { addSignal('warn','Demo: set a starting balance first',null); return; }
   const gate = preTradeSafetyCheck();
@@ -5273,10 +5401,21 @@ function placeDemoTrade(dir, ob, quality = 1) {
   // ── EXECUTION DELAY simulation ──
   const delay = getExecDelay();
   addSignal('info', `Exec delay: ${delay}ms — queuing order`, null);
-  setTimeout(() => _executeDemoTrade(dir, ob, quality), delay);
+  setTimeout(() => _executeDemoTrade(dir, ob, quality, rawSetup, qualityScore), delay);
 }
 
-function _executeDemoTrade(dir, ob, quality = 1) {
+// Grade-scaled reward multiple — replaces the old flat CFG.RR everywhere a
+// trade is opened. Weak (grade 1/C) setups are statistically less likely to
+// run the full distance, so they get a shorter target; strong (grade 3/A)
+// setups get a longer one. CFG.RR is kept as the grade-2/B baseline so
+// existing saved settings still mean roughly what they used to.
+function gradeRR(quality) {
+  if (quality >= 3) return CFG.RR * 1.15;   // A-grade: let it run further
+  if (quality <= 1) return CFG.RR * 0.60;   // C-grade: take profit sooner
+  return CFG.RR;                             // B-grade: baseline
+}
+
+function _executeDemoTrade(dir, ob, quality = 1, rawSetup = null, qualityScore = null) {
   if(!mid) return;
   const gate = preTradeSafetyCheck();
   if(!gate.ok) return;
@@ -5290,14 +5429,29 @@ function _executeDemoTrade(dir, ob, quality = 1) {
     ? mid + dynSpread / 2 + slip
     : mid - dynSpread / 2 + slip).toFixed(2);
 
-  let slPrice;
-  if(ob) {
-    slPrice = isBuy ? ob.low - 30 : ob.high + 30; // buffer beyond OB, rescaled for BTCUSD's $ magnitude
-  } else {
-    const arr = candles[currentTF];
-    const lastN = arr.length >= 14 ? arr.slice(-14) : arr;
-    const atr = lastN.length > 0 ? lastN.reduce((s, c) => s + c.high - c.low, 0) / lastN.length : 150; // fallback ATR rescaled for BTCUSD
-    slPrice = isBuy ? entryPrice - atr * 1.5 : entryPrice + atr * 1.5;
+  // ── SL/TP GEOMETRY ──
+  // Prefer RefinedStrategy.calculateTradeGeometry() — it derives SL from the
+  // setup's actual sweep/OB/structure levels (HYBRID reference) plus a proper
+  // ATR buffer, instead of a flat $30 buffer. Falls back to the old fixed-
+  // buffer/ATR logic if the rich setup object isn't available or the engine
+  // rejects it, so a signal never gets silently dropped by this change.
+  let slPrice, geomUsed = false;
+  if (rawSetup && rawSetup.signal) {
+    const geometry = RefinedStrategy.calculateTradeGeometry(dir === 'UP' ? 'BUY' : 'SELL', entryPrice, rawSetup);
+    if (geometry.valid) {
+      slPrice = geometry.sl;
+      geomUsed = true;
+    }
+  }
+  if (!geomUsed) {
+    if(ob) {
+      slPrice = isBuy ? ob.low - 30 : ob.high + 30; // buffer beyond OB, rescaled for BTCUSD's $ magnitude
+    } else {
+      const arr = candles[currentTF];
+      const lastN = arr.length >= 14 ? arr.slice(-14) : arr;
+      const atr = lastN.length > 0 ? lastN.reduce((s, c) => s + c.high - c.low, 0) / lastN.length : 150; // fallback ATR rescaled for BTCUSD
+      slPrice = isBuy ? entryPrice - atr * 1.5 : entryPrice + atr * 1.5;
+    }
   }
   // ── MAX SL CAP ──
   let slDist = Math.abs(entryPrice - slPrice);
@@ -5307,10 +5461,10 @@ function _executeDemoTrade(dir, ob, quality = 1) {
     addSignal('info', `SL capped to max $${CFG.MAX_SL_PTS}: ${slPrice.toFixed(2)}`, mid);
   }
   if(slDist < 15) { addSignal('warn','SL too tight (< $15) — skipping',null); return; }
-  const tpPrice = isBuy ? entryPrice + slDist * CFG.RR : entryPrice - slDist * CFG.RR;
+  const tpPrice = isBuy ? entryPrice + slDist * gradeRR(quality) : entryPrice - slDist * gradeRR(quality);
 
   // ── POSITION SIZING ──
-  const riskCheck = checkRiskOverflow(slDist, quality);
+  const riskCheck = checkRiskOverflow(slDist, quality, undefined, { usePositions: demoPositions, useMid: mid, qualityScore });
   const lots = riskCheck.lots;
   const qMult = riskCheck.qMult;
   const growthFactor = riskCheck.growthFactor;
@@ -5322,13 +5476,14 @@ function _executeDemoTrade(dir, ob, quality = 1) {
   const posUnits = adjLots * CONTRACT_SIZE;
   const margin = (adjLots * CONTRACT_SIZE * entryPrice) / CFG.LEVERAGE;
   const slAmount = adjLots * CONTRACT_SIZE * slDist;
-  const tpAmount = +(slAmount * CFG.RR).toFixed(2);
+  const tpAmount = +(slAmount * gradeRR(quality)).toFixed(2);
   const grade = quality >= 3 ? '★★★' : quality === 2 ? '★★' : '★';
   const newsTag = newsEngine.state !== 'NORMAL' ? ` [NEWS:${newsEngine.state}×${newsLotMult}]` : '';
   const riskTag = '';
   const pos = {
     id: ++demoPosId, dir, entry: entryPrice, lots: adjLots, posUnits, margin,
     slPrice, tpPrice, slAmount, tpAmount, quality,
+    qMult: riskCheck.qMult,  // stored for the portfolio-heat guard on future concurrent trades
     beTriggered: false, trailActive: false, trailPhase: 0, trailHighWater: entryPrice, openTime: Date.now(),
     partialTaken: false,  // Survival Engine: partial TP at 70% progress (closes 50%, SL → BE)
   };
@@ -5349,11 +5504,23 @@ function _executeDemoTrade(dir, ob, quality = 1) {
   updateStatsStrip();
 }
 
+// Grade-based trail offset — applied equally to all three phase thresholds
+// so the ordering (P1 < P2 < P3) is always preserved. Weak (grade 1/C)
+// trades are statistically more likely to give back an open profit, so they
+// lock in gains earlier; strong (grade 3/A) trades get more room to develop
+// before each stage engages. Grade 2/B keeps the original thresholds.
+function gradeTrailOffset(quality) {
+  if (quality >= 3) return 5;    // A-grade: more room before each phase locks in
+  if (quality <= 1) return -10;  // C-grade: protect profit sooner
+  return 0;
+}
+
 // ── THREE-PHASE TRAILING STOP ENGINE ──
 // Phase 1: BE Lock — SL moves to entry + minTrail when price reaches phase1% of TP distance
 // Phase 2: Profit Protection — SL trails at 40% of the move distance from entry
 // Phase 3: Runner Mode — SL trails at 60% of the move distance from entry
 // All phases are evaluated simultaneously on every tick. A trade can jump phases.
+// Thresholds are grade-shifted per position — see gradeTrailOffset() above.
 function updateThreePhaseTrail(pos, currentPrice) {
   if(!CFG.TRAIL_ENABLED) return null;
   const isBuy = pos.dir === 'UP';
@@ -5367,6 +5534,12 @@ function updateThreePhaseTrail(pos, currentPrice) {
   let newSL = pos.slPrice;
   let phase = pos.trailPhase || 0;
   let trailInfo = '';
+
+  // Grade-shifted phase thresholds for this position.
+  const _off = gradeTrailOffset(pos.quality);
+  const P1 = Math.max(10, CFG.TRAIL_PHASE_1 + _off);
+  const P2 = Math.max(P1 + 5, CFG.TRAIL_PHASE_2 + _off);
+  const P3 = Math.max(P2 + 5, CFG.TRAIL_PHASE_3 + _off);
 
   // ── BE LOCK DEBOUNCE: require price to sustain at trigger level across 2
   //    distinct candle epochs before the BE lock activates.
@@ -5390,23 +5563,23 @@ function updateThreePhaseTrail(pos, currentPrice) {
   // ── Evaluate highest phase first so a fast-moving price jumps directly ──
 
   // Phase 3: 60% runner (check first — highest priority)
-  if(pctToTP >= CFG.TRAIL_PHASE_3 && phase < 3) {
+  if(pctToTP >= P3 && phase < 3) {
     const trailDist = totalMove * 0.60;
     const candidate = isBuy ? currentPrice - trailDist : currentPrice + trailDist;
     newSL = isBuy ? Math.max(pos.slPrice, candidate) : Math.min(pos.slPrice, candidate);
     phase = 3;
-    trailInfo = `RUN @ ${CFG.TRAIL_PHASE_3}% — 60% trail → ${newSL.toFixed(2)}`;
+    trailInfo = `RUN @ ${P3}% — 60% trail → ${newSL.toFixed(2)}`;
   }
   // Phase 2: 40% profit protection
-  else if(pctToTP >= CFG.TRAIL_PHASE_2 && phase < 2) {
+  else if(pctToTP >= P2 && phase < 2) {
     const trailDist = totalMove * 0.40;
     const candidate = isBuy ? currentPrice - trailDist : currentPrice + trailDist;
     newSL = isBuy ? Math.max(pos.slPrice, candidate) : Math.min(pos.slPrice, candidate);
     phase = 2;
-    trailInfo = `PROT @ ${CFG.TRAIL_PHASE_2}% — 40% trail → ${newSL.toFixed(2)}`;
+    trailInfo = `PROT @ ${P2}% — 40% trail → ${newSL.toFixed(2)}`;
   }
   // Phase 1: Break-even lock — requires qualifying price on 2 distinct candles
-  else if(pctToTP >= CFG.TRAIL_PHASE_1 && phase < 1) {
+  else if(pctToTP >= P1 && phase < 1) {
     // Advance counter only once per unique candle epoch
     if (_nowEpoch !== pos._beLockEpoch) {
       pos._beLockEpoch = _nowEpoch;
@@ -5426,9 +5599,9 @@ function updateThreePhaseTrail(pos, currentPrice) {
       );
       newSL = isBuy ? pos.entry + beDist : pos.entry - beDist;
       phase = 1;
-      trailInfo = `BE LOCK @ ${CFG.TRAIL_PHASE_1}% — SL → ${newSL.toFixed(2)} (dist:${beDist.toFixed(1)}pts)`;
+      trailInfo = `BE LOCK @ ${P1}% — SL → ${newSL.toFixed(2)} (dist:${beDist.toFixed(1)}pts)`;
     }
-  } else if(pctToTP < CFG.TRAIL_PHASE_1 && phase < 1) {
+  } else if(pctToTP < P1 && phase < 1) {
     // Reset debounce if price retreats below the threshold before lock activates
     pos._beLockTicks = 0;
     pos._beLockEpoch = 0;
@@ -5447,21 +5620,39 @@ function updateThreePhaseTrail(pos, currentPrice) {
 }
 
 // ── CHECK DEMO POSITIONS ──
-// ── PROFIT LOCK ──
-// Sweeps profit into a locked vault once CFG.PROFIT_TARGET is reached, then
-// drops the working trading balance back down so a later drawdown can never
-// eat into money already banked. The bot keeps trading on the reduced
+// ── PROFIT LOCK (DAILY TARGET) ──
+// CFG.PROFIT_TARGET is a DAILY $ target, measured against the balance at the
+// start of the current calendar day (profitLockBaseline). Once hit, that
+// day's profit chunk is swept into a locked vault so a later drawdown can
+// never eat into money already banked. The bot keeps trading on the reduced
 // working balance — the vault is never touched by position sizing.
 //
-//   1st hit: 100% of that profit chunk is locked away.
-//   2nd hit onward: only CFG.PROFIT_LOCK_KEEP_PCT of each new chunk stays in
-//   the working balance (compounds forward); the rest keeps getting locked.
+//   1st hit of the day : 100% of that profit chunk is locked away.
+//   2nd hit of the day onward: only CFG.PROFIT_LOCK_KEEP_PCT (default 30%)
+//   of each new chunk stays in the working balance (compounds forward for
+//   further trading that day); the other 70% keeps getting locked.
+//
+// At the first check on a new calendar day, the baseline snaps forward to
+// that day's opening balance and the hit counter resets to 0 — so every day
+// starts a fresh run at the target. (lockedProfit itself is cumulative and
+// never resets — it's the running total banked across all days.) Since this
+// is event-driven (checked on trade close, not a live clock), the reset
+// actually lands on the first trade-closing event after midnight, not at
+// the exact midnight tick if the bot is idle with no positions closing then.
 //
 // Call this after ANY change to demoBalance from a closed trade.
 function checkProfitLock() {
   if (!CFG.PROFIT_LOCK_ENABLED) return;
   const target = CFG.PROFIT_TARGET;
   if (!target || target <= 0) return;
+
+  const today = new Date().toDateString();
+  if (profitLockDay !== today) {
+    profitLockDay      = today;
+    profitLockBaseline = demoBalance;
+    profitLockHits     = 0;
+    addSignal('info', `[PROFIT LOCK] New trading day — daily target reset to $${target.toFixed(2)} from balance $${demoBalance.toFixed(2)}.`, null);
+  }
   if (!profitLockBaseline) profitLockBaseline = demoStartBal || demoBalance;
 
   // Loop in case one big win jumps past the target by more than one
@@ -5501,6 +5692,7 @@ function _persistProfitLock() {
     saved.lockedProfit = lockedProfit;
     saved.profitLockHits = profitLockHits;
     saved.profitLockBaseline = profitLockBaseline;
+    saved.profitLockDay = profitLockDay;
     localStorage.setItem('pabotCFG', JSON.stringify(saved));
   } catch (e) {}
 }
@@ -5538,7 +5730,11 @@ function checkDemoPositions() {
     if(totalMove <= 0) return;
     const currentMove = isBuy ? mid - pos.entry : pos.entry - mid;
     const progress = currentMove / totalMove;
-    if(progress < 0.70) return;
+    // Grade-shifted partial-TP trigger — same offset used by the trail
+    // engine, so C-grade trades bank their partial sooner and A-grade
+    // trades are given more room to develop before locking in the runner.
+    const partialThreshold = Math.min(0.85, Math.max(0.40, 0.70 + gradeTrailOffset(pos.quality) / 100));
+    if(progress < partialThreshold) return;
 
     // Mark as taken immediately to prevent double-trigger
     pos.partialTaken = true;
@@ -5558,7 +5754,7 @@ function checkDemoPositions() {
     pos.lots     = +((pos.lots     || 0.01) * 0.50).toFixed(2);
     pos.posUnits = pos.posUnits * 0.50;
     pos.slAmount = pos.lots * CONTRACT_SIZE * Math.abs(pos.entry - pos.slPrice);
-    pos.tpAmount = +(pos.slAmount * CFG.RR).toFixed(2);
+    pos.tpAmount = +(pos.slAmount * gradeRR(pos.quality)).toFixed(2);
 
     // Lock SL at entry (guaranteed break-even on the runner)
     pos.slPrice     = pos.entry;
@@ -5758,6 +5954,7 @@ function loadSettings() {
     if(saved.lockedProfit)       lockedProfit       = saved.lockedProfit;
     if(saved.profitLockHits)     profitLockHits     = saved.profitLockHits;
     profitLockBaseline = saved.profitLockBaseline || demoStartBal || demoBalance;
+    profitLockDay = saved.profitLockDay || null; // if it's a new calendar day, checkProfitLock() will reset baseline/hits on the next trade close
     if(saved.RISK_PCT)      CFG.RISK_PCT      = saved.RISK_PCT;
     if(saved.WIN_RATE_TGT)  CFG.WIN_RATE_TGT  = saved.WIN_RATE_TGT;
     if(saved.MAX_DD_PCT)    CFG.MAX_DD_PCT    = saved.MAX_DD_PCT;
@@ -5778,6 +5975,22 @@ function loadSettings() {
     if(saved.SAFETY_CONSEC_LOSS_HALVE !== undefined) CFG.SAFETY_CONSEC_LOSS_HALVE = saved.SAFETY_CONSEC_LOSS_HALVE;
     if(saved.SAFETY_EMERG_FLOOR_PCT   !== undefined) CFG.SAFETY_EMERG_FLOOR_PCT   = saved.SAFETY_EMERG_FLOOR_PCT;
     if(saved.SAFETY_MIN_MARGIN_PCT   !== undefined) CFG.SAFETY_MIN_MARGIN_PCT   = saved.SAFETY_MIN_MARGIN_PCT;
+    if(saved.MAX_CONCURRENT_POS      !== undefined) CFG.MAX_CONCURRENT_POS      = saved.MAX_CONCURRENT_POS;
+    if(saved.GROWTH_FACTOR_CAP       !== undefined) CFG.GROWTH_FACTOR_CAP       = saved.GROWTH_FACTOR_CAP;
+    if(saved.REGIME_MULT_TREND       !== undefined) CFG.REGIME_MULT_TREND       = saved.REGIME_MULT_TREND;
+    if(saved.REGIME_MULT_RANGE       !== undefined) CFG.REGIME_MULT_RANGE       = saved.REGIME_MULT_RANGE;
+    if(saved.REGIME_MULT_DEAD        !== undefined) CFG.REGIME_MULT_DEAD        = saved.REGIME_MULT_DEAD;
+    if(saved.REGIME_MULT_NEUTRAL     !== undefined) CFG.REGIME_MULT_NEUTRAL     = saved.REGIME_MULT_NEUTRAL;
+    if(saved.SESSION_MULT_LONDON     !== undefined) CFG.SESSION_MULT_LONDON     = saved.SESSION_MULT_LONDON;
+    if(saved.SESSION_MULT_NY         !== undefined) CFG.SESSION_MULT_NY         = saved.SESSION_MULT_NY;
+    if(saved.SESSION_MULT_ASIAN      !== undefined) CFG.SESSION_MULT_ASIAN      = saved.SESSION_MULT_ASIAN;
+    if(saved.SESSION_MULT_OFFHOURS   !== undefined) CFG.SESSION_MULT_OFFHOURS   = saved.SESSION_MULT_OFFHOURS;
+    if(saved.QUALITY_MULT_1          !== undefined) CFG.QUALITY_MULT_1          = saved.QUALITY_MULT_1;
+    if(saved.QUALITY_MULT_2          !== undefined) CFG.QUALITY_MULT_2          = saved.QUALITY_MULT_2;
+    if(saved.QUALITY_MULT_3          !== undefined) CFG.QUALITY_MULT_3          = saved.QUALITY_MULT_3;
+    if(saved.NEWS_MULT_PRE           !== undefined) CFG.NEWS_MULT_PRE           = saved.NEWS_MULT_PRE;
+    if(saved.NEWS_MULT_POST          !== undefined) CFG.NEWS_MULT_POST          = saved.NEWS_MULT_POST;
+    if(saved.NEWS_MULT_AWARE         !== undefined) CFG.NEWS_MULT_AWARE         = saved.NEWS_MULT_AWARE;
   } catch(e) {}
   $('cfgDemoBalance').value  = CFG.DEMO_BALANCE || '';
   $('cfgProfitTarget').value = CFG.PROFIT_TARGET || '';
@@ -5803,6 +6016,23 @@ function loadSettings() {
   $('cfgConsecLossHalve').value = CFG.SAFETY_CONSEC_LOSS_HALVE;
   $('cfgEmergFloorPct').value   = CFG.SAFETY_EMERG_FLOOR_PCT;
   $('cfgMinMarginPct').value    = CFG.SAFETY_MIN_MARGIN_PCT;
+  $('cfgMaxConcurPos').value    = CFG.MAX_CONCURRENT_POS;
+  $('maxConcurDisplay').textContent = CFG.MAX_CONCURRENT_POS;
+  $('cfgGrowthCap').value       = CFG.GROWTH_FACTOR_CAP;
+  $('cfgRegimeTrend').value     = CFG.REGIME_MULT_TREND;
+  $('cfgRegimeRange').value     = CFG.REGIME_MULT_RANGE;
+  $('cfgRegimeDead').value      = CFG.REGIME_MULT_DEAD;
+  $('cfgRegimeNeutral').value   = CFG.REGIME_MULT_NEUTRAL;
+  $('cfgSessionLondon').value   = CFG.SESSION_MULT_LONDON;
+  $('cfgSessionNY').value       = CFG.SESSION_MULT_NY;
+  $('cfgSessionAsian').value    = CFG.SESSION_MULT_ASIAN;
+  $('cfgSessionOff').value      = CFG.SESSION_MULT_OFFHOURS;
+  $('cfgQual1').value           = CFG.QUALITY_MULT_1;
+  $('cfgQual2').value           = CFG.QUALITY_MULT_2;
+  $('cfgQual3').value           = CFG.QUALITY_MULT_3;
+  $('cfgNewsPre').value         = CFG.NEWS_MULT_PRE;
+  $('cfgNewsPost').value        = CFG.NEWS_MULT_POST;
+  $('cfgNewsAware').value       = CFG.NEWS_MULT_AWARE;
   $('trailPhasesWrap').style.opacity = CFG.TRAIL_ENABLED ? '1' : '0.35';
   $('riskDisplay').textContent    = CFG.RISK_PCT.toFixed(1)+'%';
   $('winRateDisplay').textContent = CFG.WIN_RATE_TGT+'%';
@@ -5840,11 +6070,27 @@ function saveSettings() {
   CFG.SAFETY_CONSEC_LOSS_HALVE = parseInt($('cfgConsecLossHalve').value) || 3;
   CFG.SAFETY_EMERG_FLOOR_PCT   = parseInt($('cfgEmergFloorPct').value)   || 15;
   CFG.SAFETY_MIN_MARGIN_PCT   = parseInt($('cfgMinMarginPct').value)   || 50;
+  CFG.MAX_CONCURRENT_POS      = Math.max(1, parseInt($('cfgMaxConcurPos').value) || 2);
+  CFG.GROWTH_FACTOR_CAP       = Math.max(1, parseFloat($('cfgGrowthCap').value) || 1.5);
+  { const v = parseFloat($('cfgRegimeTrend').value);   CFG.REGIME_MULT_TREND    = Math.max(0, isFinite(v) ? v : 1.0); }
+  { const v = parseFloat($('cfgRegimeRange').value);   CFG.REGIME_MULT_RANGE    = Math.max(0, isFinite(v) ? v : 0.50); }
+  { const v = parseFloat($('cfgRegimeDead').value);    CFG.REGIME_MULT_DEAD     = Math.max(0, isFinite(v) ? v : 0.25); }
+  { const v = parseFloat($('cfgRegimeNeutral').value); CFG.REGIME_MULT_NEUTRAL  = Math.max(0, isFinite(v) ? v : 0.75); }
+  { const v = parseFloat($('cfgSessionLondon').value); CFG.SESSION_MULT_LONDON  = Math.max(0, isFinite(v) ? v : 1.0); }
+  { const v = parseFloat($('cfgSessionNY').value);     CFG.SESSION_MULT_NY      = Math.max(0, isFinite(v) ? v : 0.85); }
+  { const v = parseFloat($('cfgSessionAsian').value);  CFG.SESSION_MULT_ASIAN   = Math.max(0, isFinite(v) ? v : 0.45); }
+  { const v = parseFloat($('cfgSessionOff').value);    CFG.SESSION_MULT_OFFHOURS= Math.max(0, isFinite(v) ? v : 0.50); }
+  { const v = parseFloat($('cfgQual1').value);    CFG.QUALITY_MULT_1 = Math.max(0, isFinite(v) ? v : 1.0); }
+  { const v = parseFloat($('cfgQual2').value);    CFG.QUALITY_MULT_2 = Math.max(0, isFinite(v) ? v : 1.5); }
+  { const v = parseFloat($('cfgQual3').value);    CFG.QUALITY_MULT_3 = Math.max(0, isFinite(v) ? v : 2.0); }
+  { const v = parseFloat($('cfgNewsPre').value);  CFG.NEWS_MULT_PRE   = Math.max(0, isFinite(v) ? v : 0.60); }
+  { const v = parseFloat($('cfgNewsPost').value); CFG.NEWS_MULT_POST  = Math.max(0, isFinite(v) ? v : 1.20); }
+  { const v = parseFloat($('cfgNewsAware').value);CFG.NEWS_MULT_AWARE = Math.max(0, isFinite(v) ? v : 0.80); }
   try {
     localStorage.setItem('pabotCFG', JSON.stringify({
       DEMO_BALANCE: CFG.DEMO_BALANCE, PROFIT_TARGET: CFG.PROFIT_TARGET,
       PROFIT_LOCK_ENABLED: CFG.PROFIT_LOCK_ENABLED, PROFIT_LOCK_KEEP_PCT: CFG.PROFIT_LOCK_KEEP_PCT,
-      lockedProfit, profitLockHits, profitLockBaseline,
+      lockedProfit, profitLockHits, profitLockBaseline, profitLockDay,
       RISK_PCT: CFG.RISK_PCT, WIN_RATE_TGT: CFG.WIN_RATE_TGT,
       MAX_DD_PCT: CFG.MAX_DD_PCT, RR: CFG.RR, MAX_LOT_CAP: CFG.MAX_LOT_CAP,
       MIN_LOT_SIZE: CFG.MIN_LOT_SIZE, LEVERAGE: CFG.LEVERAGE, MAX_SPREAD_USD: CFG.MAX_SPREAD_USD,
@@ -5857,6 +6103,14 @@ function saveSettings() {
       SAFETY_CONSEC_LOSS_HALVE: CFG.SAFETY_CONSEC_LOSS_HALVE,
       SAFETY_EMERG_FLOOR_PCT: CFG.SAFETY_EMERG_FLOOR_PCT,
       SAFETY_MIN_MARGIN_PCT: CFG.SAFETY_MIN_MARGIN_PCT,
+      MAX_CONCURRENT_POS: CFG.MAX_CONCURRENT_POS,
+      GROWTH_FACTOR_CAP: CFG.GROWTH_FACTOR_CAP,
+      REGIME_MULT_TREND: CFG.REGIME_MULT_TREND, REGIME_MULT_RANGE: CFG.REGIME_MULT_RANGE,
+      REGIME_MULT_DEAD: CFG.REGIME_MULT_DEAD, REGIME_MULT_NEUTRAL: CFG.REGIME_MULT_NEUTRAL,
+      SESSION_MULT_LONDON: CFG.SESSION_MULT_LONDON, SESSION_MULT_NY: CFG.SESSION_MULT_NY,
+      SESSION_MULT_ASIAN: CFG.SESSION_MULT_ASIAN, SESSION_MULT_OFFHOURS: CFG.SESSION_MULT_OFFHOURS,
+      QUALITY_MULT_1: CFG.QUALITY_MULT_1, QUALITY_MULT_2: CFG.QUALITY_MULT_2, QUALITY_MULT_3: CFG.QUALITY_MULT_3,
+      NEWS_MULT_PRE: CFG.NEWS_MULT_PRE, NEWS_MULT_POST: CFG.NEWS_MULT_POST, NEWS_MULT_AWARE: CFG.NEWS_MULT_AWARE,
     }));
   } catch(e) {}
   // No real broker balance — always use demoBalance
@@ -5866,7 +6120,7 @@ function saveSettings() {
     resetHardFloor(newBal);
     liveEquity = [newBal]; liveMaxBal = newBal; liveMaxDD = 0;
     wins = 0; losses = 0; demoTradeLog = [];
-    lockedProfit = 0; profitLockHits = 0; profitLockBaseline = newBal;
+    lockedProfit = 0; profitLockHits = 0; profitLockBaseline = newBal; profitLockDay = new Date().toDateString();
   }
   if(authed && !startBalance && balance) { startBalance = balance; CFG.START_BALANCE = balance; }
   updateStatsStrip(); updateTargetBar(); updateDepositNotice();
@@ -5924,6 +6178,10 @@ $('cfgMinMarginPct').addEventListener('input', e=>{
   $('minMarginDisplay').textContent = v + '%';
   $('dispMinMargin').textContent = v + '%';
 });
+$('cfgMaxConcurPos').addEventListener('input', e=>{
+  const v = parseInt(e.target.value) || 2;
+  $('maxConcurDisplay').textContent = v;
+});
 
 function updateSafetyDisplayValues() {
   const hfp = CFG.SAFETY_HARD_FLOOR_PCT;
@@ -5961,24 +6219,102 @@ function updateRiskAudit(riskCheck, pos) {
   $('raLevel').textContent = `${marginLevel.toFixed(1)}%`;
 }
 
-function checkRiskOverflow(slDist, quality, useBalance) {
-  // Position-sizing calc only — no overflow tracking, no blocking, no BLOCK mode.
+function checkRiskOverflow(slDist, quality, useBalance, opts) {
+  // Position-sizing calc — single source of truth for live/demo AND backtest.
+  opts = opts || {};
   const bal = useBalance !== undefined ? useBalance : demoBalance;
   const startBal = demoStartBal || bal;
-  let riskPct = CFG.RISK_PCT;
+  const floor = opts.useFloor !== undefined ? opts.useFloor : hardFloor;
+
+  // FIX: this is the function that actually sizes every live/demo/backtest trade
+  // (calcDynamicLots(), which had this cap, is never called anywhere in the app).
+  // Without this line, CFG.RISK_PCT could exceed the user's configured hard cap.
+  let riskPct = Math.min(CFG.RISK_PCT, SAFETY.MAX_RISK_CAP_PCT);
   if(consecutiveLosses >= SAFETY.CONSEC_LOSS_HALVE) {
     const halvings = consecutiveLosses - SAFETY.CONSEC_LOSS_HALVE + 1;
     riskPct = riskPct / Math.pow(2, halvings);
     riskPct = Math.max(0.1, riskPct);
   }
-  const targetRisk = bal * riskPct / 100;
-  const qMult = QUALITY_MULT[Math.max(1, Math.min(3, quality))] || 1.0;
-  const growthFactor = startBal > 0 ? Math.min(1.5, Math.sqrt(bal / startBal)) : 1.0;
-  const rawLots = slDist > 0 ? (targetRisk * qMult * growthFactor) / (slDist * CONTRACT_SIZE) : 0;
-  const lots = Math.max(CFG.MIN_LOT_SIZE, Math.min(CFG.MAX_LOT_CAP, +rawLots.toFixed(2)));
+
+  // ── Hard-floor tradeable-capital reduction ──
+  // Once a floor is active, risk is a % of capital actually above the floor
+  // (with an 80% buffer), never a % of the full balance. useFloor lets
+  // backtest pass its own replayHardFloor instead of the live-session floor.
+  const tradeableCapital = floor > 0 ? Math.max(0, (bal - floor) * 0.80) : bal;
+  const targetRisk = Math.min(bal * riskPct / 100, tradeableCapital * riskPct / 100);
+
+  // Prefer the continuous score-based multiplier when the caller supplied a
+  // raw 0-100 score (opts.qualityScore); otherwise fall back to the old
+  // coarse 1/2/3-bucket multiplier.
+  let qMult = qualityMultContinuous(opts.qualityScore) ?? qualityMult(quality);
+  const growthFactor = startBal > 0 ? Math.min(CFG.GROWTH_FACTOR_CAP, Math.sqrt(bal / startBal)) : 1.0;
+
+  // ── Portfolio-heat guard ──
+  // Sum the quality multiplier "R" already committed by currently-open
+  // positions (each position's qMult at entry, stored as pos.qMult) and cap
+  // how much more this new trade's quality bonus can add on top. Only ever
+  // scales the multiplier DOWN toward 1.0x baseline risk — never rejects the
+  // trade and never drops size below the account's normal per-trade risk, so
+  // every signal still fires and gets at least a full base-risk-sized trade.
+  let heatCapped = false;
+  if (CFG.MAX_PORTFOLIO_HEAT_R > 0 && opts.usePositions) {
+    const openRiskR = opts.usePositions.reduce((s, p) => s + (Number.isFinite(p.qMult) ? p.qMult : 1.0), 0);
+    const roomLeftR = Math.max(0, CFG.MAX_PORTFOLIO_HEAT_R - openRiskR);
+    if (qMult > roomLeftR) {
+      qMult = Math.max(1.0, Math.min(qMult, roomLeftR));
+      heatCapped = true;
+    }
+  }
+
+  // ── Market regime & session risk scaling ──
+  // Both live and backtest run through the same candle/indicator pipeline
+  // (see the Execution Integrity Manifest at the top of this file), so these
+  // read safely and consistently in either context.
+  const regime = detectMarketRegime();
+  const regimeMult = regime === 'EXPANSION' || regime === 'TREND' ? CFG.REGIME_MULT_TREND
+                   : regime === 'RANGE'     ? CFG.REGIME_MULT_RANGE
+                   : regime === 'DEAD'      ? CFG.REGIME_MULT_DEAD   // should be filtered upstream, but safety net
+                   : CFG.REGIME_MULT_NEUTRAL;                          // NEUTRAL / UNKNOWN
+  const sess = strategy.activeSession ? strategy.activeSession() : 'OFF-HOURS';
+  const sessionMult = sess === 'LONDON'    ? CFG.SESSION_MULT_LONDON
+                    : sess === 'NEW YORK'  ? CFG.SESSION_MULT_NY
+                    : sess === 'ASIAN'     ? CFG.SESSION_MULT_ASIAN
+                    : CFG.SESSION_MULT_OFFHOURS;
+
+  const sizeMult = qMult * growthFactor * regimeMult * sessionMult;
+  const rawLots = slDist > 0 ? (targetRisk * sizeMult) / (slDist * CONTRACT_SIZE) : 0;
+  let lots = Math.max(CFG.MIN_LOT_SIZE, Math.min(CFG.MAX_LOT_CAP, +rawLots.toFixed(2)));
+
+  // ── Free-margin guard ──
+  // Only runs when the caller supplies live position/price state (live/demo
+  // open). Backtest doesn't track margin per-position today, so it's skipped
+  // there rather than guessed at — same as before this fix, no regression.
+  if (opts.usePositions && opts.useMid) {
+    const floatingPnl = opts.usePositions.reduce((s,p) => s + calcPnLForPos(p, opts.useMid), 0);
+    const equity = bal + floatingPnl;
+    const usedMargin = opts.usePositions.reduce((s,p) => s + (p.margin||0), 0);
+    const freeMgn = equity - usedMargin;
+    const reqMargin = (lots * CONTRACT_SIZE * opts.useMid) / CFG.LEVERAGE;
+    if (freeMgn > 0 && reqMargin > freeMgn * (SAFETY.MIN_MARGIN_PCT / 100)) {
+      const maxLots = Math.floor(((freeMgn * (SAFETY.MIN_MARGIN_PCT / 100) * CFG.LEVERAGE) / (CONTRACT_SIZE * opts.useMid)) * 100) / 100;
+      lots = Math.max(CFG.MIN_LOT_SIZE, Math.min(lots, +maxLots.toFixed(2)));
+    }
+  }
+
+  // ── Hard-floor max-loss guard ──
+  // Never size a trade whose SL could cut through the floor.
+  if (floor > 0) {
+    const maxAllowedLoss = Math.max(0, bal - floor);
+    const slAmount = lots * CONTRACT_SIZE * slDist;
+    if (slAmount > maxAllowedLoss) {
+      const safeLots = slDist > 0 ? Math.floor((maxAllowedLoss / (CONTRACT_SIZE * slDist)) * 100) / 100 : 0;
+      lots = Math.max(0, Math.min(lots, safeLots));
+    }
+  }
+
   const actualRisk = lots * CONTRACT_SIZE * slDist;
   const actualRiskPct = bal > 0 ? (actualRisk / bal) * 100 : 0;
-  return { ok: true, lots, actualRisk, targetRisk, riskPct, qMult, growthFactor, actualRiskPct };
+  return { ok: true, lots, actualRisk, targetRisk, riskPct, qMult, growthFactor, regimeMult, sessionMult, sizeMult, actualRiskPct, heatCapped };
 }
 
 // ── OANDA FEED ENGINE ──
@@ -6266,7 +6602,7 @@ function runStrategy() {
     addSignal('buy',
       `[${sess}]${kzTag} BUY ${grade}${nTag} — M5-Sweep→M1-BMS→OB→FVG→Zone ✓ SL@sweep-low`, mid);
     // SL placed at M5 sweep candle low (new strategy spec)
-    placeDemoTrade('UP', bs.slRef || bs.ob, bs.legacyGrade);
+    placeDemoTrade('UP', bs.slRef || bs.ob, bs.legacyGrade, bs.raw, bs.qualityScore);
 
   // ── FIRE SELL ──
   } else if (ss.signal && ss.sweepEpoch !== undefined && !isBearDup) {
@@ -6282,7 +6618,7 @@ function runStrategy() {
     addSignal('sell',
       `[${sess}]${kzTag} SELL ${grade}${nTag} — M5-Sweep→M1-BMS→OB→FVG→Zone ✓ SL@sweep-high`, mid);
     // SL placed at M5 sweep candle high (new strategy spec)
-    placeDemoTrade('DOWN', ss.slRef || ss.ob, ss.legacyGrade);
+    placeDemoTrade('DOWN', ss.slRef || ss.ob, ss.legacyGrade, ss.raw, ss.qualityScore);
   }
 }
 
@@ -6822,11 +7158,11 @@ const replay = {
     );
 
     if (bs.signal && bs.sweepEpoch !== undefined && !isBullDup) {
-      sig = { dir: 'UP', ob: bs.ob, quality: bs.legacyGrade };
+      sig = { dir: 'UP', ob: bs.ob, quality: bs.legacyGrade, raw: bs.raw, qualityScore: bs.qualityScore };
       this.replayLastBullEpoch = epoch;
       this.replayLastBullPrice = bs.sweepLow  || 0;
     } else if (ss.signal && ss.sweepEpoch !== undefined && !isBearDup) {
-      sig = { dir: 'DOWN', ob: ss.ob, quality: ss.legacyGrade };
+      sig = { dir: 'DOWN', ob: ss.ob, quality: ss.legacyGrade, raw: ss.raw, qualityScore: ss.qualityScore };
       this.replayLastBearEpoch = epoch;
       this.replayLastBearPrice = ss.sweepHigh || 0;
     }
@@ -6859,13 +7195,24 @@ const replay = {
       ? price + dynSpread / 2 + slip
       : price - dynSpread / 2 + slip).toFixed(2);
 
-    let slPrice;
-    if (sig.ob) {
-      slPrice = isBuy ? sig.ob.low - 30 : sig.ob.high + 30; // buffer beyond OB, rescaled for BTCUSD's $ magnitude
-    } else {
-      const lastN = candles[60].slice(-14);
-      const atr = lastN.reduce((s, c) => s + c.high - c.low, 0) / (lastN.length || 1);
-      slPrice = isBuy ? entryPrice - atr * 1.5 : entryPrice + atr * 1.5;
+    // ── SL/TP GEOMETRY — mirrors _executeDemoTrade: prefer real setup
+    // geometry, fall back to the old fixed-buffer/ATR logic. ──
+    let slPrice, geomUsed = false;
+    if (sig.raw && sig.raw.signal) {
+      const geometry = RefinedStrategy.calculateTradeGeometry(isBuy ? 'BUY' : 'SELL', entryPrice, sig.raw);
+      if (geometry.valid) {
+        slPrice = geometry.sl;
+        geomUsed = true;
+      }
+    }
+    if (!geomUsed) {
+      if (sig.ob) {
+        slPrice = isBuy ? sig.ob.low - 30 : sig.ob.high + 30; // buffer beyond OB, rescaled for BTCUSD's $ magnitude
+      } else {
+        const lastN = candles[60].slice(-14);
+        const atr = lastN.reduce((s, c) => s + c.high - c.low, 0) / (lastN.length || 1);
+        slPrice = isBuy ? entryPrice - atr * 1.5 : entryPrice + atr * 1.5;
+      }
     }
     // ── MAX SL CAP ──
     let slDist = Math.abs(entryPrice - slPrice);
@@ -6874,16 +7221,19 @@ const replay = {
       slDist = CFG.MAX_SL_PTS;
     }
     if (slDist < 15) return;
-    const tpPrice = isBuy ? entryPrice + slDist * CFG.RR : entryPrice - slDist * CFG.RR;
+    const rr = gradeRR(sig.quality);
+    const tpPrice = isBuy ? entryPrice + slDist * rr : entryPrice - slDist * rr;
 
     // ── POSITION SIZING ──
-    const riskCheck = checkRiskOverflow(slDist, sig.quality, this.replayBal);
+    const riskCheck = checkRiskOverflow(slDist, sig.quality, this.replayBal, { useFloor: this.replayHardFloor, qualityScore: sig.qualityScore, usePositions: this.positions });
 
-    // Risk pct modified by news lotMult
+    // Risk pct modified by news lotMult. sizeMult folds in signal-quality,
+    // balance-growth, regime, and session scaling — same factors live
+    // trading applies via riskCheck.lots — so backtest sizing matches live.
     let riskPct = riskCheck.riskPct * ns.lotMult;
     if (this.replayRiskHalved) riskPct /= 2;
-    const slAmount = this.replayBal * riskPct / 100;
-    const tpAmount = +(slAmount * CFG.RR).toFixed(2);
+    const slAmount = this.replayBal * riskPct / 100 * riskCheck.sizeMult;
+    const tpAmount = +(slAmount * rr).toFixed(2);
     let lots = +(slAmount / (slDist * CONTRACT_SIZE)).toFixed(2);
     lots = Math.max(CFG.MIN_LOT_SIZE, Math.min(CFG.MAX_LOT_CAP, lots));
 
@@ -6891,6 +7241,7 @@ const replay = {
       id: ++this.replayPosIdCounter,
       dir: sig.dir, entry: entryPrice, lots, posUnits: lots * CONTRACT_SIZE,
       slPrice, tpPrice, slAmount: slAmount || Math.abs(entryPrice - slPrice) * lots * CONTRACT_SIZE, tpAmount,
+      qMult: riskCheck.qMult,  // stored for the portfolio-heat guard on future concurrent trades
       beTriggered: false, trailActive: false, trailPhase: 0, trailHighWater: entryPrice, openEpoch: epoch, quality: sig.quality,
       // ── Extended metadata for multi-run analysis ──
       openIndex: this.index,
