@@ -639,10 +639,10 @@ input[type=range]::-webkit-slider-thumb{
   </div>
   <div class="drawer-body">
     <div class="settings-section">
-      <div class="settings-section-title">Live Feed — Deriv WebSocket</div>
+      <div class="settings-section-title">Live Feed — Binance API</div>
       <div class="demo-notice">
-        <strong>✅ DERIV FEED ACTIVE</strong>
-        Live BTC/USD bid/ask ticks stream free from Deriv WebSocket (cryBTCUSD).
+        <strong>✅ BINANCE FEED ACTIVE</strong>
+        Live BTC/USD bid/ask ticks stream free from Binance WebSocket (BTCUSDT).
         No API key required — click Connect to start.
       </div>
       <button class="btn btn-auth" id="authBtn" style="margin-top:8px">Connect</button>
@@ -866,10 +866,10 @@ input[type=range]::-webkit-slider-thumb{
       </div>
       <div class="field">
         <div style="background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:9px 12px;font-size:9px;color:var(--text2);line-height:1.8">
-          <span style="color:var(--gold);font-family:var(--sans);font-size:9px;font-weight:700;display:block;margin-bottom:3px">BTCUSD · Deriv cryBTCUSD</span>
+          <span style="color:var(--gold);font-family:var(--sans);font-size:9px;font-weight:700;display:block;margin-bottom:3px">BTCUSD · Binance BTCUSDT</span>
           Spread: $6–$16 typical · Asian: ~$18 · NY/LON overlap: ~$6 · News spike: ~$33+ (placeholder calibration)<br>
           Slippage: $0–$4 · Execution: 50–200 ms · Leverage and spread guard set above<br>
-          Data: Deriv cryBTCUSD WebSocket · lots adjust x0.60–x1.20 by news impact
+          Data: Binance BTCUSDT WebSocket · lots adjust x0.60–x1.20 by news impact
         </div>
       </div>
     </div>
@@ -977,8 +977,8 @@ input[type=range]::-webkit-slider-thumb{
   </div>
   <div class="drawer-body">
     <div class="bt-summary-note">
-      Replays your strategy on real historical BTCUSD data from Deriv. Uses identical ICT/BMS rules, session filters, and risk management as live mode — no data advantage, no repainting. M5 HTF bias + M1 execution. Trades appear on chart during replay.<br><br>
-      <span style="color:var(--gold);font-family:var(--sans);font-size:8px;font-weight:700;letter-spacing:.08em">DERIV SIMULATION ACTIVE:</span><br>
+      Replays your strategy on real historical BTCUSD data from Binance. Uses identical ICT/BMS rules, session filters, and risk management as live mode — no data advantage, no repainting. M5 HTF bias + M1 execution. Trades appear on chart during replay.<br><br>
+      <span style="color:var(--gold);font-family:var(--sans);font-size:8px;font-weight:700;letter-spacing:.08em">MARKET SIMULATION ACTIVE:</span><br>
       News-aware trading (ALL news types traded · lots ×0.60 at release · ×1.20 post-release) · Spread: 0.18–0.55 typical | News spike: ~1.10–1.30 | Slippage: 0.00–0.12 pts | Execution: 50–200 ms
     </div>
     <div class="settings-section">
@@ -1099,14 +1099,17 @@ input[type=range]::-webkit-slider-thumb{
 //  CHRONOLOGICAL ORDER: bars processed strictly index+1 after index; no
 //  look-back into future indices. Scrub/fast-forward uses the same pipeline.
 // ════════════════════════════════════════════════════════════════════════════
-// ── DERIV WEBSOCKET CONFIG ──
-const DERIV_APP_ID = 1089;        // public demo app_id — register at deriv.com for production
-const DERIV_WS_URL = `wss://ws.binaryws.com/websockets/v3?app_id=${DERIV_APP_ID}`;
-const DERIV_SYMBOL = 'cryBTCUSD'; // Deriv symbol for spot Bitcoin / USD — verify against Deriv's live active_symbols list
+// ── BINANCE PUBLIC API CONFIG ──
+// Free, no API key required. REST klines for historical candles + combined
+// WebSocket stream (bookTicker + kline_1m/5m/15m) for live bid/ask and OHLC.
+const BINANCE_SYMBOL     = 'BTCUSDT';
+const BINANCE_STREAM     = 'btcusdt';
+const BINANCE_WS_URL     = `wss://stream.binance.com:9443/stream?streams=${BINANCE_STREAM}@bookTicker/${BINANCE_STREAM}@kline_1m/${BINANCE_STREAM}@kline_5m/${BINANCE_STREAM}@kline_15m`;
+const BINANCE_REST_BASE  = 'https://api.binance.com/api/v3/klines';
 const CONTRACT_SIZE = 1;          // 1 lot = 1 BTC (crypto CFD convention) — verify against your broker's actual contract spec; was 100 (oz/lot) for gold
 
-let _derivWS             = null;  // WebSocket handle — Deriv live feed
-let _derivReconnectTimer = null;
+let _binanceWS             = null;  // WebSocket handle — Binance live feed
+let _binanceReconnectTimer = null;
 
 const CFG = {
   RISK_PCT     : 1.0,
@@ -1220,15 +1223,15 @@ function resizeCV() {
 // ── UNIVERSAL SPREAD & LEVERAGE ──
 // NOTE: all $ values below are rescaled ~30x from the original XAUUSD calibration to
 // roughly match BTCUSD's price magnitude (BTC ~$60k-100k vs gold ~$2.6k). These are
-// reasonable placeholders — replace with real Deriv cryBTCUSD spread data when available.
+// reasonable placeholders — replace with real Binance BTCUSDT spread data when available.
 // Leverage, min/max lot size, and the max-spread guard are all user-configurable now —
 // see CFG.LEVERAGE, CFG.MIN_LOT_SIZE, CFG.MAX_LOT_CAP, CFG.MAX_SPREAD_USD (Settings panel).
 const BTCUSD_SPREAD     = 10;    // baseline reference only — getDynamicSpread() used for execution
 
-// ── MARKET SIMULATION ENGINE — Deriv cryBTCUSD ──
+// ── MARKET SIMULATION ENGINE — Binance BTCUSDT ──
 // Placeholder calibration for BTCUSD spread behavior ($6–$16 typical, spikes to $33+ on news)
 const SIM = {
-  // Spread simulation (BTCUSD $) — Deriv cryBTCUSD
+  // Spread simulation (BTCUSD $) — Binance BTCUSDT
   SPREAD_BASE        : 6,      // tightest baseline (NY/London overlap)
   SPREAD_ASIAN_ADD   : 9,      // added 00-06 UTC (thin liquidity, wider)
   SPREAD_PRENY_ADD   : 5,      // added 20-00 UTC (late NY wind-down)
@@ -1244,7 +1247,7 @@ const SIM = {
   DELAY_MAX          : 200,
 };
 
-// ── DYNAMIC SPREAD — Deriv cryBTCUSD ──
+// ── DYNAMIC SPREAD — Binance BTCUSDT ──
 // Placeholder session profile (rescaled from gold calibration) — replace with real BTCUSD spread data:
 // Dead Asian 00-03: ~$16–21  |  Late Asian 03-06: ~$13–16
 // Pre-London 06-07: ~$10–14  |  London open 07-09: ~$7–9
@@ -1286,11 +1289,11 @@ function getDynamicSpread(epochSec, newsState) {
   return Math.max(5, +spread.toFixed(2));
 }
 
-// ── LIVE SPREAD — uses real Deriv bid/ask, overlays news widening ──
+// ── LIVE SPREAD — uses real Binance bid/ask, overlays news widening ──
 // Called only in live-trading paths (entry pricing, PnL calc, spread display).
 // getDynamicSpread() remains the backtest-only simulation.
 function getLiveSpread(newsState) {
-  // Real market spread from Deriv feed; fall back to session estimate if not yet connected
+  // Real market spread from Binance feed; fall back to session estimate if not yet connected
   const mktSpread = (ask && bid && ask > bid) ? (ask - bid) : SIM.SPREAD_BASE;
   const ns = newsState || (typeof newsEngine !== 'undefined' ? newsEngine.state : 'NORMAL');
   let spread = mktSpread;
@@ -1420,7 +1423,7 @@ function btNewsStateAt(epochSec, events) {
 function calcPnLForPos(pos, currentMid) {
   if(!currentMid || !pos.entry || !pos.slPrice) return 0;
   const isBuy = pos.dir === 'UP';
-  // Use real live spread (Deriv bid/ask) so floating PnL matches actual fill costs
+  // Use real live spread (Binance bid/ask) so floating PnL matches actual fill costs
   const halfSpread = (ask && bid && ask > bid) ? (ask - bid) / 2 : BTCUSD_SPREAD / 2;
   const effectivePrice = isBuy ? currentMid - halfSpread : currentMid + halfSpread;
   const delta = isBuy ? (effectivePrice - pos.entry) : (pos.entry - effectivePrice);
@@ -1523,70 +1526,70 @@ const REFINED_STRATEGY_CFG = {
   // ---------- Liquidity ----------
   liquidity: {
     m5Lookback: 40,
-    swingStrength: 2,
-    minSweepDepthATR: 0.03,
-    maxSweepDepthATR: 1.50,
-    minReclaimATR: 0.05,
-    minReclaimRatio: 0.15,       // was 0.20 — accepts a slightly shallower reclaim
-    maxLevelAgeBars: 55,         // was 40 — considers older, still-untested swing levels
+    swingStrength: 1,             // was 2 — accepts shallower/less-confirmed swing points as sweepable liquidity
+    minSweepDepthATR: 0.015,      // was 0.03 — accepts shallower sweeps
+    maxSweepDepthATR: 2.00,       // was 1.50 — allows deeper spike sweeps through
+    minReclaimATR: 0.03,          // was 0.05
+    minReclaimRatio: 0.08,        // was 0.15 — accepts a much shallower reclaim
+    maxLevelAgeBars: 80,          // was 55 — considers older swing levels
     minPreviousTouches: 1,
-    maxPreviousTouches: 8,       // was 6 — allows slightly more-tested levels
+    maxPreviousTouches: 12,       // was 8 — allows more-tested levels through
     preferFreshLiquidity: true
   },
 
   // ---------- Existing M1 structure machinery ----------
   structure: {
-    lookback: 16,                // was 12 — wider swing-reference window
-    minBreakATR: 0.05,
-    minCloseStrength: 0.48,      // was 0.55 — still requires a decisive close, just less extreme
-    minBodyRatio: 0.38,          // was 0.45 — still a real-bodied candle, not a doji
+    lookback: 20,                 // was 16 — wider swing-reference window
+    minBreakATR: 0.03,            // was 0.05
+    minCloseStrength: 0.36,       // was 0.48 — less extreme close required
+    minBodyRatio: 0.28,           // was 0.38 — tolerates smaller-bodied candles
     requireCloseBeyondSwing: true,
-    maxBarsAfterSweep: 16        // was 12 — more time allowed for BMS to follow the sweep
+    maxBarsAfterSweep: 24         // was 16 — much more time allowed for BMS to follow the sweep
   },
 
   // ---------- Order block ----------
   orderBlock: {
-    lookback: 20,                // was 18
-    maxAgeBars: 22,               // was 18
-    maxMitigations: 2,            // was 1 — tolerates one extra touch before invalidating
-    maxOBRangeATR: 1.50,          // was 1.20
-    minOBRangeATR: 0.04,          // was 0.05
+    lookback: 26,                 // was 20
+    maxAgeBars: 34,                // was 22
+    maxMitigations: 4,             // was 2 — tolerates more touches before invalidating
+    maxOBRangeATR: 2.20,           // was 1.50
+    minOBRangeATR: 0.02,           // was 0.04
     mustLeadToBMS: true,
-    originDistanceBars: 6         // was 4
+    originDistanceBars: 10         // was 6
   },
 
   // ---------- FVG / imbalance ----------
   fvg: {
-    lookback: 16,                 // was 12
-    maxAgeBars: 16,                // was 12
-    minGapATR: 0.02,               // was 0.03
+    lookback: 22,                  // was 16
+    maxAgeBars: 24,                 // was 16
+    minGapATR: 0.01,                // was 0.02
     preferFresh: true,
     overlapBonus: true
   },
 
   // ---------- Retracement ----------
   retracement: {
-    preferredMin: 0.20,
-    preferredMax: 0.50,
-    acceptableMin: 0.10,          // was 0.15 — wider acceptable band
-    acceptableMax: 0.72,          // was 0.65
+    preferredMin: 0.15,             // was 0.20
+    preferredMax: 0.60,             // was 0.50
+    acceptableMin: 0.05,            // was 0.10 — much wider acceptable band
+    acceptableMax: 0.85,            // was 0.72
     useFVGOverlapWhenPresent: true,
-    minZoneWidthATR: 0.02,
-    maxZoneWidthATR: 1.00         // was 0.80
+    minZoneWidthATR: 0.01,          // was 0.02
+    maxZoneWidthATR: 1.40           // was 1.00
   },
 
   // ---------- Setup sequence ----------
   sequence: {
-    maxSetupAgeMinutes: 35,               // was 25 — setups stay valid longer before expiring
-    maxBarsBetweenSweepAndBMS: 16,        // was 12
-    maxBarsBetweenBMSAndRetrace: 28       // was 20
+    maxSetupAgeMinutes: 60,               // was 35 — setups stay valid longer before expiring
+    maxBarsBetweenSweepAndBMS: 24,        // was 16
+    maxBarsBetweenBMSAndRetrace: 40       // was 28
   },
 
   // ---------- Quality engine ----------
   quality: {
-    minimumScore: 58,   // was 65 — main lever for trade frequency
-    strongScore: 70,    // was 75 — shifted down with the floor to preserve tier spacing
-    premiumScore: 82,   // was 85
+    minimumScore: 40,   // was 58 — main lever for trade frequency; lower = more trades, weaker average edge
+    strongScore: 58,    // was 70 — shifted down with the floor to preserve tier spacing
+    premiumScore: 75,   // was 82
 
     weights: {
       liquidity: 20,
@@ -1634,9 +1637,9 @@ const REFINED_STRATEGY_CFG = {
 
   // ---------- Execution ----------
   execution: {
-    onePositionAtATime: true,        // kept for backward compatibility
-    maxConcurrentPositions: 1,       // NEW — generalizes onePositionAtATime; used when > 1
-    duplicateCooldownMs: 210000,
+    onePositionAtATime: false,       // kept for backward compatibility
+    maxConcurrentPositions: 2,       // was 1 — lets a second setup fire while one is still open
+    duplicateCooldownMs: 90000,      // was 210000 (3.5min) — shorter cooldown between re-entries
     duplicatePriceTolerance: 0.21
   },
 
@@ -5165,7 +5168,7 @@ function _executeDemoTrade(dir, ob, quality = 1) {
   if(!gate.ok) return;
 
   const isBuy = dir === 'UP';
-  // ── LIVE SPREAD — real bid/ask from Deriv + news overlay ──
+  // ── LIVE SPREAD — real bid/ask from Binance + news overlay ──
   const dynSpread = getLiveSpread(newsEngine.state);
   // ── SLIPPAGE ──
   const slip = getSlippage(isBuy);
@@ -5916,7 +5919,7 @@ function _processTick(midPrice, epochSec) {
     }
   }
   // Expose the forming bar as the last element in each array so strategy
-  // logic always sees the current (incomplete) bar, matching live Deriv behaviour.
+  // logic always sees the current (incomplete) bar, matching live Binance behaviour.
   if (!replay.active) {
     for (const gran of grans) {
       if (!_forming[gran]) continue;
@@ -5933,41 +5936,76 @@ function _processTick(midPrice, epochSec) {
   }
 }
 
-// ── DERIV LIVE FEED ENGINE ──────────────────────────────────────────────────
-// Deriv provides true tick-by-tick bid/ask on cryBTCUSD at no cost.
-// Historical candles are fetched via the ticks_history request on connect.
+// ── BINANCE LIVE FEED ENGINE ────────────────────────────────────────────────
+// Binance's public market-data API provides true tick-by-tick best bid/ask on
+// BTCUSDT at no cost and with no API key. Historical candles are loaded via a
+// plain REST call to the klines endpoint on connect; live ticks and live OHLC
+// updates arrive over a combined WebSocket stream (bookTicker + kline_1m/5m/15m).
 
-function _connectDeriv() {
-  if (_derivWS) { try { _derivWS.close(); } catch(_) {} _derivWS = null; }
-  if (_derivReconnectTimer) { clearTimeout(_derivReconnectTimer); _derivReconnectTimer = null; }
+const _BINANCE_INTERVAL_MAP = { '1m': 60, '5m': 300, '15m': 900 };
 
-  addSignal('info', 'Connecting to Deriv WebSocket...', null);
+async function _binanceLoadHistory() {
+  // Load historical OHLC bars for all three timeframes via REST.
+  const specs = [[60, '1m', 500], [300, '5m', 200], [900, '15m', 100]];
+  for (const [gran, interval, limit] of specs) {
+    try {
+      const url = `${BINANCE_REST_BASE}?symbol=${BINANCE_SYMBOL}&interval=${interval}&limit=${limit}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      // Guard: do not overwrite the live candles[] while a BT fetch owns
+      // pagination against the same public API.
+      if (btFetching) continue;
+      const arr = data.map(c => ({
+        epoch: Math.floor(c[0] / 1000),
+        open : +c[1],
+        high : +c[2],
+        low  : +c[3],
+        close: +c[4],
+      }));
+      if (arr.length) {
+        candles[gran] = arr;
+        const label = gran === 60 ? '1min' : gran === 300 ? '5min' : '15min';
+        addSignal('info', `${arr.length} ${label} candles loaded from Binance`, null);
+        drawChart();
+        // After M1 history refreshes on reconnect, scan for gap SL/TP hits
+        if (gran === 60 && _gapCheckPending) _scanGapPositions();
+      }
+    } catch (e) {
+      addSignal('warn', `Binance history load failed (${interval}): ${e.message}`, null);
+    }
+  }
+}
+
+function _connectBinance() {
+  if (_binanceWS) { try { _binanceWS.close(); } catch(_) {} _binanceWS = null; }
+  if (_binanceReconnectTimer) { clearTimeout(_binanceReconnectTimer); _binanceReconnectTimer = null; }
+
+  addSignal('info', 'Connecting to Binance WebSocket...', null);
   setConn('wait');
 
-  const ws = new WebSocket(DERIV_WS_URL);
-  _derivWS = ws;
+  // Historical bars load independently over REST — no need to wait for the
+  // WebSocket to open first.
+  _binanceLoadHistory();
+
+  const ws = new WebSocket(BINANCE_WS_URL);
+  _binanceWS = ws;
 
   ws.onopen = () => {
     setConn('on');
     authed = true;
-    addSignal('info', 'Deriv connected — BTCUSD live tick feed active', null);
-    // Load historical OHLC bars for all three timeframes
-    _derivRequestHistory(ws, 60,  500);
-    _derivRequestHistory(ws, 300, 200);
-    _derivRequestHistory(ws, 900, 100);
-    // Subscribe to real-time bid/ask ticks
-    ws.send(JSON.stringify({ ticks: DERIV_SYMBOL, subscribe: 1 }));
+    addSignal('info', 'Binance connected — BTCUSDT live tick feed active', null);
   };
 
   ws.onmessage = evt => {
-    try { _handleDerivMsg(JSON.parse(evt.data)); } catch(_) {}
+    try { _handleBinanceMsg(JSON.parse(evt.data)); } catch(_) {}
   };
 
   ws.onclose = () => {
-    _derivWS = null;
+    _binanceWS = null;
     setConn('wait');
-    addSignal('warn', 'Deriv disconnected — reconnecting in 5 s...', null);
-    _derivReconnectTimer = setTimeout(_connectDeriv, 5000);
+    addSignal('warn', 'Binance disconnected — reconnecting in 5 s...', null);
+    _binanceReconnectTimer = setTimeout(_connectBinance, 5000);
   };
 
   ws.onerror = () => {
@@ -5975,32 +6013,17 @@ function _connectDeriv() {
   };
 }
 
-function _derivRequestHistory(ws, granularity, count) {
-  ws.send(JSON.stringify({
-    ticks_history  : DERIV_SYMBOL,
-    adjust_start_time: 1,
-    count,
-    end            : 'latest',
-    granularity,
-    start          : 1,
-    style          : 'candles',
-  }));
-}
+function _handleBinanceMsg(msg) {
+  if (!msg || !msg.stream || !msg.data) return;
+  const data = msg.data;
 
-function _handleDerivMsg(msg) {
-  // Surface any API-level errors
-  if (msg.error) {
-    addSignal('warn', `Deriv: ${msg.error.message}`, null);
-    return;
-  }
-
-  // ── Real-time tick ──────────────────────────────────────────────
-  if (msg.msg_type === 'tick' && msg.tick) {
-    const t   = msg.tick;
-    const newBid = +(t.bid   || t.quote);
-    const newAsk = +(t.ask   || t.quote);
+  // ── Real-time best bid/ask tick ───────────────────────────────
+  if (msg.stream.endsWith('@bookTicker')) {
+    const newBid = +data.b;
+    const newAsk = +data.a;
+    if (!newBid || !newAsk) return;
     const newMid = (newBid + newAsk) / 2;
-    const epochSec = t.epoch;
+    const epochSec = Math.floor(Date.now() / 1000);
 
     if (mid && newMid !== mid) {
       const diff = newMid - mid, dir = diff > 0 ? 'up' : 'dn';
@@ -6017,46 +6040,21 @@ function _handleDerivMsg(msg) {
     _processTick(newMid, epochSec);
     checkDemoPositions();
     if (!replay.active) runStrategy();
+    return;
   }
 
-  // ── Historical candle batch ─────────────────────────────────────
-  if (msg.msg_type === 'candles' && msg.candles) {
-    const gran = msg.echo_req && +msg.echo_req.granularity;
-    if (!gran || !candles[gran]) return;
-    // Guard: do not overwrite the live candles[] while a BT fetch owns the
-    // WebSocket channel — the BT WebSockets are separate connections but the
-    // Deriv live connection can still push a historical batch (from the onopen
-    // _derivRequestHistory calls) during a concurrent backtest fetch.
-    if (btFetching) return;
-    const arr = msg.candles.map(c => ({
-      epoch: +c.epoch,
-      open : +c.open,
-      high : +c.high,
-      low  : +c.low,
-      close: +c.close,
-    }));
-    if (arr.length) {
-      candles[gran] = arr;
-      const label = gran === 60 ? '1min' : gran === 300 ? '5min' : '15min';
-      addSignal('info', `${arr.length} ${label} candles loaded from Deriv`, null);
-      drawChart();
-      // After M1 history refreshes on reconnect, scan for gap SL/TP hits
-      if (gran === 60 && _gapCheckPending) _scanGapPositions();
-    }
-  }
-
-  // ── Live OHLC candle update (from candle subscription if active) ─
-  if (msg.msg_type === 'ohlc' && msg.ohlc) {
-    const o    = msg.ohlc;
-    const gran = +o.granularity;
+  // ── Live OHLC candle update (kline stream — updates every trade) ─
+  if (data.e === 'kline' && data.k) {
+    const k    = data.k;
+    const gran = _BINANCE_INTERVAL_MAP[k.i];
     const arr  = candles[gran];
-    if (!arr) return;
+    if (!arr || btFetching) return;
     const bar = {
-      epoch: +o.open_time,
-      open : +o.open,
-      high : +o.high,
-      low  : +o.low,
-      close: +o.close,
+      epoch: Math.floor(k.t / 1000),
+      open : +k.o,
+      high : +k.h,
+      low  : +k.l,
+      close: +k.c,
     };
     const last = arr.length ? arr[arr.length - 1] : null;
     if (last && last.epoch === bar.epoch) {
@@ -6069,12 +6067,12 @@ function _handleDerivMsg(msg) {
   }
 }
 
-// ── PRIMARY CONNECT — Deriv WebSocket (primary and only data source) ──
+// ── PRIMARY CONNECT — Binance public API (primary and only data source) ──
 function connect() {
-  if (_derivWS) { try { _derivWS.close(); } catch(_) {} _derivWS = null; }
-  if (_derivReconnectTimer) { clearTimeout(_derivReconnectTimer); _derivReconnectTimer = null; }
+  if (_binanceWS) { try { _binanceWS.close(); } catch(_) {} _binanceWS = null; }
+  if (_binanceReconnectTimer) { clearTimeout(_binanceReconnectTimer); _binanceReconnectTimer = null; }
   setConn('wait');
-  _connectDeriv();
+  _connectBinance();
 }
 
 
@@ -7056,74 +7054,55 @@ function btCheckReady() {
 });
 
 async function fetchBtCandles(granularity, startEpoch, endEpoch, onProgress) {
-  // Fetches historical OHLC candles from Deriv ticks_history API for backtest.
-  // Paginates backwards from endEpoch until startEpoch is covered.
+  // Fetches historical OHLC candles from Binance's public REST klines API for
+  // backtest. Paginates FORWARD from startEpoch until endEpoch is covered.
   //
-  // KEY DESIGN: each page request sends ONLY `end` (no `start`), so Deriv always
-  // returns the most recent `count` candles before the cursor regardless of how
-  // many candles fall in the sub-range.  Sending `start` alongside `count` caused
-  // Deriv to silently cap results to the number of bars between start and end —
-  // making the old `chunk.length < 5000` guard fire after the very first page even
-  // for multi-week date ranges, leaving the backtest with ≤ one page of data.
+  // KEY DESIGN: each page request sends both `startTime` and `endTime` (ms) plus
+  // `limit=1000` (Binance's per-request cap). We advance the cursor to just after
+  // the last returned candle's open time and keep requesting until either the
+  // window is covered or a page comes back with fewer than 1000 bars (meaning
+  // we've reached the most recent available data for that sub-range).
+  const intervalMap = { 60: '1m', 300: '5m', 900: '15m' };
+  const interval = intervalMap[granularity] || '1m';
   const all = [];
-  let cursor = endEpoch;
+  let cursorMs = startEpoch * 1000;
+  const endMs = endEpoch * 1000;
   let reqCount = 0;
-  const MAX_PAGES = 200; // hard safety cap (~200 × 5000 M1 bars ≈ 9 months)
+  const MAX_PAGES = 200; // hard safety cap (~200 × 1000 M1 bars ≈ 4-5 months)
   btFetching = true;
 
-  // Fetch one page ending at `end`.  No `start` param — filter client-side.
-  // Uses a settle-flag so the promise always resolves/rejects exactly once,
-  // even when the WS closes unexpectedly without sending data (Deriv rate limit).
-  const fetchPage = (end, gran) => new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (fn, val) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null; ws.close(); } catch(_) {}
-      fn(val);
-    };
-    let ws;
-    try { ws = new WebSocket(DERIV_WS_URL); }
-    catch(e) { reject(e); return; }
+  // Fetch one page starting at `start`. Uses fetch() with a manual timeout so a
+  // stalled request doesn't hang the pagination loop indefinitely.
+  const fetchPage = (startMs, gran) => new Promise((resolve, reject) => {
+    const controller = new AbortController();
     const timer = setTimeout(() => {
-      finish(reject, new Error('Deriv request timed out after 25s'));
+      controller.abort();
+      reject(new Error('Binance request timed out after 25s'));
     }, 25000);
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        ticks_history   : DERIV_SYMBOL,
-        adjust_start_time: 1,
-        end             : end,
-        count           : 5000,
-        granularity     : gran,
-        style           : 'candles',
-      }));
-    };
-    ws.onmessage = evt => {
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.error) { finish(reject, new Error(msg.error.message)); return; }
-        if (msg.msg_type === 'candles' && msg.candles) {
-          finish(resolve, msg.candles.map(c => ({
-            epoch: +c.epoch, open: +c.open, high: +c.high, low: +c.low, close: +c.close
-          })));
-        } else { finish(resolve, []); }
-      } catch(e) { finish(reject, e); }
-    };
-    ws.onerror = () => { finish(reject, new Error('WebSocket error')); };
-    // CRITICAL: onclose must reject (not just clear timer) to prevent a promise
-    // hang when Deriv closes the connection without sending any data (rate limit).
-    ws.onclose = () => { finish(reject, new Error('WebSocket closed before data received')); };
+    const url = `${BINANCE_REST_BASE}?symbol=${BINANCE_SYMBOL}&interval=${gran}&startTime=${startMs}&endTime=${endMs}&limit=1000`;
+    fetch(url, { signal: controller.signal })
+      .then(res => {
+        clearTimeout(timer);
+        if (!res.ok) { reject(new Error(`HTTP ${res.status}`)); return; }
+        return res.json();
+      })
+      .then(data => {
+        if (!data) return;
+        resolve(data.map(c => ({
+          epoch: Math.floor(c[0] / 1000), open: +c[1], high: +c[2], low: +c[3], close: +c[4]
+        })));
+      })
+      .catch(e => { clearTimeout(timer); reject(e); });
   });
 
   try {
-    while (cursor > startEpoch && !btCancelled && reqCount < MAX_PAGES) {
+    while (cursorMs < endMs && !btCancelled && reqCount < MAX_PAGES) {
       let chunk = null;
       // Retry each page up to 3 times with exponential back-off so a transient
-      // Deriv rate-limit or connection drop doesn't abort the entire fetch.
+      // Binance rate-limit or connection drop doesn't abort the entire fetch.
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          chunk = await fetchPage(cursor, granularity);
+          chunk = await fetchPage(cursorMs, interval);
           break; // success
         } catch(e) {
           if (attempt === 3) {
@@ -7137,25 +7116,20 @@ async function fetchBtCandles(granularity, startEpoch, endEpoch, onProgress) {
       }
       if (!chunk || !chunk.length) break;
 
-      // Filter to the requested date range and accumulate
-      for (const bar of chunk) {
-        if (bar.epoch >= startEpoch && bar.epoch <= endEpoch) all.push(bar);
-      }
+      // Accumulate — already scoped to [startEpoch, endEpoch] by the request itself
+      all.push(...chunk);
 
       reqCount++;
       if (onProgress) onProgress(reqCount, chunk.length);
 
-      // Stop when the earliest bar in this page is at or before startEpoch —
-      // we've now covered the full requested window.
-      if (chunk[0].epoch <= startEpoch) break;
+      const lastBar = chunk[chunk.length - 1];
+      // Fewer than a full page back means we've reached the end of available data.
+      if (chunk.length < 1000) break;
 
-      // If fewer than ~10 bars came back the API has no more historical data.
-      if (chunk.length < 10) break;
-
-      // Move cursor back before the earliest bar in this chunk and fetch the next page.
-      cursor = chunk[0].epoch - granularity;
-      if (cursor <= startEpoch) break;
-      await new Promise(r => setTimeout(r, 600)); // polite rate limit (increased from 400ms)
+      // Move cursor forward past the last bar in this chunk and fetch the next page.
+      cursorMs = (lastBar.epoch + granularity) * 1000;
+      if (cursorMs >= endMs) break;
+      await new Promise(r => setTimeout(r, 300)); // polite rate limit
     }
   } finally {
     btFetching = false;
@@ -7164,7 +7138,7 @@ async function fetchBtCandles(granularity, startEpoch, endEpoch, onProgress) {
   all.sort((a, b) => a.epoch - b.epoch);
   const filtered = all.filter((c, i, arr) => i === 0 || c.epoch !== arr[i-1].epoch);
   if (filtered.length < 100) {
-    addSignal('warn', `BT data: only ${filtered.length} bars returned. Deriv may have limited history for this date range.`, null);
+    addSignal('warn', `BT data: only ${filtered.length} bars returned. Binance may have limited history for this date range.`, null);
   }
   return filtered;
 }
@@ -7844,7 +7818,7 @@ setInterval(() => {
   });
 }, 60 * 1000);
 
-addSignal('info','BTCUSD PA Bot v2 — Deriv WebSocket data engine ready',null);
+addSignal('info','BTCUSD PA Bot v2 — Binance API data engine ready',null);
 
 addSignal('info','Strategy: Elite ICT/SMC Delivery Engine — M5 Liquidity Sweep → M1 True BMS → M1 Displacement → M1 OB → M1 FVG (optional) → 10-70% Mean Threshold | SL=Sweep Candle | Loosened Filters v2',null);
 </script>
